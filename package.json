@@ -1,0 +1,10 @@
+{
+  "name": "minesweeper-online-assistant",
+  "version": "0.2.22",
+  "private": true,
+  "description": "A Tampermonkey helper for minesweeper.online with deterministic Minesweeper logic.",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/solver.test.mjs && node tests/soundness.test.mjs && node tests/compliance.test.mjs"
+  }
+}

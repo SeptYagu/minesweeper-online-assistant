@@ -1,0 +1,5 @@
+node_modules/
+backups/
+.codex-remote-attachments/
+.DS_Store
+Thumbs.db
