@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.2.27
+// @version      0.2.28
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -15,7 +15,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.2.27";
+  const ASSISTANT_VERSION = "0.2.28";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const SALT_LENGTH = 8;
@@ -884,8 +884,6 @@
         } else if (isAllModels(mineWays, totalModels)) {
           mineKeys.add(key);
           explanations.set(key, makeGlobalExplanation(key, "mine", totalMines, totalModels, outsideKeys, []));
-        } else {
-          probabilities.set(key, mineWays / totalModels);
         }
       }
     }

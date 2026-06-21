@@ -170,6 +170,15 @@ function fakeCell(id) {
 }
 
 {
+  const result = solve(
+    [c(0, 0, "closed"), c(1, 0, "closed"), c(2, 0, "closed")],
+    { width: 3, height: 1, totalMines: 1 }
+  );
+  assert.equal(result.stats.global.enabled, true);
+  assert.equal(result.probabilities.size, 0, "uninformed global average probabilities should stay hidden");
+}
+
+{
   assert.equal(core._private.relativeCellName("1,0", "1,1"), "上");
   assert.equal(core._private.relativeCellName("0,0", "1,1"), "上左");
   assert.equal(core._private.relativeCellName("2,2", "1,1"), "下右");
