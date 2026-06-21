@@ -1,6 +1,6 @@
 {
   "name": "minesweeper-online-assistant",
-  "version": "0.2.29",
+  "version": "0.2.30",
   "private": true,
   "description": "A Tampermonkey helper for minesweeper.online with deterministic Minesweeper logic.",
   "type": "module",

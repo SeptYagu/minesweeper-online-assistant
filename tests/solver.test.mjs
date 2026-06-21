@@ -17,8 +17,8 @@ function c(x, y, state, number = null) {
   return { x, y, state, number };
 }
 
-function solve(cells, extra = {}) {
-  return core.solveBoard({ cells, ...extra });
+function solve(cells, extra = {}, options = {}) {
+  return core.solveBoard({ cells, ...extra }, options);
 }
 
 function keys(items) {
@@ -125,20 +125,51 @@ function fakeCell(id) {
 }
 
 {
-  const result = solve([
-    c(0, 0, "closed"),
-    c(1, 0, "open", 2),
-    c(2, 0, "closed"),
-    c(0, 1, "open", 1),
-    c(1, 1, "closed"),
-    c(2, 1, "open", 1),
-    c(0, 2, "closed"),
-    c(1, 2, "closed"),
-    c(2, 2, "closed"),
-  ]);
+  const result = solve(
+    [
+      c(0, 0, "closed"),
+      c(0, 1, "closed"),
+      c(0, 2, "closed"),
+      c(0, 3, "closed"),
+      c(1, 1, "open", 1),
+      c(1, 2, "open", 2),
+    ],
+    { width: 2, height: 4 },
+    { maxExactCells: 0 }
+  );
+  assert.equal(result.safeKeys.has("0,0"), true);
+  assert.equal(result.mineKeys.has("0,3"), true);
+  assert.equal(result.safeKeys.has("0,1"), false);
+  assert.equal(result.mineKeys.has("0,1"), false);
+  assert.equal(result.safeKeys.has("0,2"), false);
+  assert.equal(result.mineKeys.has("0,2"), false);
+  const safeExplanation = result.explanations.get("0,0");
+  const mineExplanation = result.explanations.get("0,3");
+  assert.equal(safeExplanation.constraint.origin.type, "overlap-difference");
+  assert.equal(mineExplanation.constraint.origin.type, "overlap-difference");
+  assert.match(core._private.formatExplanation(safeExplanation), /重叠读法/);
+  assert.match(core._private.formatExplanationHtml(mineExplanation), /重叠相减/);
+}
+
+{
+  const result = solve(
+    [
+      c(0, 0, "closed"),
+      c(1, 0, "open", 2),
+      c(2, 0, "closed"),
+      c(0, 1, "open", 1),
+      c(1, 1, "closed"),
+      c(2, 1, "open", 1),
+      c(0, 2, "closed"),
+      c(1, 2, "closed"),
+      c(2, 2, "closed"),
+    ],
+    {},
+    { maxIterations: 0 }
+  );
   assert.deepEqual(keys(result.mines), new Set(["0,0", "2,0"]));
   assert.deepEqual(keys(result.safe), new Set(["1,1", "0,2", "1,2", "2,2"]));
-  const explanation = result.explanations.get("1,1");
+  const explanation = result.explanations.get("1,2");
   assert.equal(explanation.conclusion, "safe");
   assert.equal(explanation.rule, "exact");
   assert.equal(explanation.constraint.origin.type, "exact");

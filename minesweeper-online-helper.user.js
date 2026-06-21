@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.2.29
+// @version      0.2.30
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -15,7 +15,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.2.29";
+  const ASSISTANT_VERSION = "0.2.30";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const SALT_LENGTH = 8;
@@ -206,6 +206,15 @@
     return result;
   }
 
+  function intersection(a, b) {
+    const result = new Set();
+    const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+    for (const item of small) {
+      if (large.has(item)) result.add(item);
+    }
+    return result;
+  }
+
   function addAll(target, source) {
     let changed = false;
     for (const item of source) {
@@ -235,6 +244,17 @@
         type: "difference",
         subset: summarizeConstraint(origin.subset),
         superset: summarizeConstraint(origin.superset),
+      };
+    }
+    if (origin.type === "overlap-difference") {
+      return {
+        type: "overlap-difference",
+        left: summarizeConstraint(origin.left),
+        right: summarizeConstraint(origin.right),
+        leftOnly: sortedKeys(origin.leftOnly || []),
+        rightOnly: sortedKeys(origin.rightOnly || []),
+        shared: sortedKeys(origin.shared || []),
+        delta: origin.delta,
       };
     }
     return { ...origin };
@@ -390,6 +410,67 @@
         ) || changed;
     }
     return changed;
+  }
+
+  function makeOverlapDifferenceConstraint(left, right, cells, count) {
+    return attachConstraintSignature({
+      source: `${left.source}<->${right.source}`,
+      cells,
+      count,
+      origin: {
+        type: "overlap-difference",
+        left: summarizeConstraint(left),
+        right: summarizeConstraint(right),
+        leftOnly: sortedKeys(difference(left.cells, right.cells)),
+        rightOnly: sortedKeys(difference(right.cells, left.cells)),
+        shared: sortedKeys(intersection(left.cells, right.cells)),
+        delta: right.count - left.count,
+      },
+    });
+  }
+
+  function deriveOverlapDifferenceConstraints(left, right, inferredMines, inferredSafe) {
+    const normalizedLeft = normalizeConstraintForKnownCells(left, inferredMines, inferredSafe);
+    const normalizedRight = normalizeConstraintForKnownCells(right, inferredMines, inferredSafe);
+
+    if (
+      normalizedLeft.cells.size === 0 ||
+      normalizedRight.cells.size === 0 ||
+      normalizedLeft.count < 0 ||
+      normalizedRight.count < 0 ||
+      normalizedLeft.count > normalizedLeft.cells.size ||
+      normalizedRight.count > normalizedRight.cells.size
+    ) {
+      return [];
+    }
+
+    const leftOnly = difference(normalizedLeft.cells, normalizedRight.cells);
+    const rightOnly = difference(normalizedRight.cells, normalizedLeft.cells);
+    if (leftOnly.size === 0 && rightOnly.size === 0) return [];
+
+    const delta = normalizedRight.count - normalizedLeft.count;
+    const derived = [];
+    if (delta === rightOnly.size) {
+      if (leftOnly.size > 0) {
+        derived.push(makeOverlapDifferenceConstraint(normalizedLeft, normalizedRight, leftOnly, 0));
+      }
+      if (rightOnly.size > 0) {
+        derived.push(
+          makeOverlapDifferenceConstraint(normalizedLeft, normalizedRight, rightOnly, rightOnly.size)
+        );
+      }
+    } else if (delta === -leftOnly.size) {
+      if (leftOnly.size > 0) {
+        derived.push(
+          makeOverlapDifferenceConstraint(normalizedLeft, normalizedRight, leftOnly, leftOnly.size)
+        );
+      }
+      if (rightOnly.size > 0) {
+        derived.push(makeOverlapDifferenceConstraint(normalizedLeft, normalizedRight, rightOnly, 0));
+      }
+    }
+
+    return derived;
   }
 
   function buildConstraintComponents(constraints) {
@@ -952,6 +1033,21 @@
           }
         }
       }
+
+      for (let i = 0; i < work.length && work.length < maxDerived; i += 1) {
+        for (let j = i + 1; j < work.length && work.length < maxDerived; j += 1) {
+          for (const derived of deriveOverlapDifferenceConstraints(
+            work[i],
+            work[j],
+            inferredMines,
+            inferredSafe
+          )) {
+            if (seen.has(derived.signature)) continue;
+            changed = applyConstraint(derived, inferredMines, inferredSafe, explanations) || changed;
+            seen.add(derived.signature);
+          }
+        }
+      }
     }
 
     constraints = buildConstraints(board, inferredMines, inferredSafe);
@@ -1181,6 +1277,16 @@
       return lines.join("\n");
     }
 
+    if (origin && origin.type === "overlap-difference") {
+      lines.push("重叠读法：两个约束共享一部分候选格，先把重叠部分抵消。");
+      lines.push(`紫色来源之一：${formatConstraintSummary(origin.left)}`);
+      lines.push(`紫色来源之二：${formatConstraintSummary(origin.right)}`);
+      lines.push(`共享候选：${formatCellList(origin.shared)}。`);
+      lines.push(`左侧差集：${formatCellList(origin.leftOnly)}。`);
+      lines.push(`右侧差集：${formatCellList(origin.rightOnly)}。`);
+      return lines.join("\n");
+    }
+
     if (origin && origin.type === "exact") {
       lines.push("枚举读法：检查这个局部区域的所有合法雷布局。");
       lines.push(`橙色层范围：${formatCellList(constraint.cells)}。`);
@@ -1241,6 +1347,17 @@
       if (related.layers[1]) lines.push(formatLayerLineHtml(related.layers[1], 1, explanation.key));
       lines.push(
         `${colorLabel("紫色", "msah-layer-text-2")} 若当前格${targetAssumption}，来源数字会冲突`
+      );
+      return lines.join("<br>");
+    }
+
+    if (origin && origin.type === "overlap-difference") {
+      lines.push(
+        `${colorLabel("橙色", "msah-layer-text-1")} 重叠相减：共享候选先抵消`
+      );
+      if (related.layers[1]) lines.push(formatLayerLineHtml(related.layers[1], 1, explanation.key));
+      lines.push(
+        `${colorLabel("紫色", "msah-layer-text-2")} 两侧差集雷数差达到边界`
       );
       return lines.join("<br>");
     }
@@ -1308,6 +1425,9 @@
       } else if (origin.type === "difference") {
         visitConstraint(origin.subset, depth + 1);
         visitConstraint(origin.superset, depth + 1);
+      } else if (origin.type === "overlap-difference") {
+        visitConstraint(origin.left, depth + 1);
+        visitConstraint(origin.right, depth + 1);
       } else if (origin.type === "exact") {
         for (const source of origin.sources || []) {
           sources.add(source);
