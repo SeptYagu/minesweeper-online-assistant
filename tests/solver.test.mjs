@@ -125,6 +125,28 @@ function fakeCell(id) {
 }
 
 {
+  const result = solve([
+    c(0, 0, "closed"),
+    c(1, 0, "open", 2),
+    c(2, 0, "closed"),
+    c(0, 1, "open", 1),
+    c(1, 1, "closed"),
+    c(2, 1, "open", 1),
+    c(0, 2, "closed"),
+    c(1, 2, "closed"),
+    c(2, 2, "closed"),
+  ]);
+  assert.deepEqual(keys(result.mines), new Set(["0,0", "2,0"]));
+  assert.deepEqual(keys(result.safe), new Set(["1,1", "0,2", "1,2", "2,2"]));
+  const explanation = result.explanations.get("1,1");
+  assert.equal(explanation.conclusion, "safe");
+  assert.equal(explanation.rule, "exact");
+  assert.equal(explanation.constraint.origin.type, "exact");
+  assert.match(core._private.formatExplanation(explanation), /枚举读法/);
+  assert.match(core._private.formatExplanationHtml(explanation), /精确枚举/);
+}
+
+{
   assert.equal(core._private.relativeCellName("1,0", "1,1"), "上");
   assert.equal(core._private.relativeCellName("0,0", "1,1"), "上左");
   assert.equal(core._private.relativeCellName("2,2", "1,1"), "下右");

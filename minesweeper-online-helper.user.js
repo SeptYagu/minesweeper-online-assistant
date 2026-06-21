@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.2.24
+// @version      0.2.25
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -15,10 +15,13 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.2.24";
+  const ASSISTANT_VERSION = "0.2.25";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const SALT_LENGTH = 8;
+  const DEFAULT_MAX_EXACT_CELLS = 18;
+  const DEFAULT_MAX_EXACT_MODELS = 50000;
+  const DEFAULT_MAX_EXACT_NODES = 250000;
   const CELL_ID_RE = /^cell_(\d+)_(\d+)$/;
   const TYPE_CLASS_RE = /^(?:[a-z0-9]+_)?type([0-8])$/i;
   const FLAG_CLASS_RE = /^[a-z0-9]+_flag$/i;
@@ -388,6 +391,252 @@
     return changed;
   }
 
+  function buildConstraintComponents(constraints) {
+    const variableToConstraints = new Map();
+    constraints.forEach((constraint, index) => {
+      for (const key of constraint.cells) {
+        if (!variableToConstraints.has(key)) variableToConstraints.set(key, []);
+        variableToConstraints.get(key).push(index);
+      }
+    });
+
+    const visitedConstraints = new Set();
+    const visitedVariables = new Set();
+    const components = [];
+
+    for (let start = 0; start < constraints.length; start += 1) {
+      if (visitedConstraints.has(start)) continue;
+      const queue = [{ type: "constraint", value: start }];
+      const componentConstraintIndexes = [];
+      const componentVariables = new Set();
+
+      while (queue.length > 0) {
+        const item = queue.shift();
+        if (item.type === "constraint") {
+          if (visitedConstraints.has(item.value)) continue;
+          visitedConstraints.add(item.value);
+          componentConstraintIndexes.push(item.value);
+          for (const key of constraints[item.value].cells) {
+            if (!visitedVariables.has(key)) queue.push({ type: "variable", value: key });
+          }
+        } else {
+          if (visitedVariables.has(item.value)) continue;
+          visitedVariables.add(item.value);
+          componentVariables.add(item.value);
+          for (const constraintIndex of variableToConstraints.get(item.value) || []) {
+            if (!visitedConstraints.has(constraintIndex)) {
+              queue.push({ type: "constraint", value: constraintIndex });
+            }
+          }
+        }
+      }
+
+      if (componentVariables.size > 0) {
+        components.push({
+          constraints: componentConstraintIndexes.map((index) => constraints[index]),
+          variables: sortedKeys(componentVariables),
+        });
+      }
+    }
+
+    return components;
+  }
+
+  function orderVariablesForExactSearch(variables, constraints) {
+    const degree = new Map(variables.map((key) => [key, 0]));
+    for (const constraint of constraints) {
+      for (const key of constraint.cells) {
+        degree.set(key, (degree.get(key) || 0) + 1);
+      }
+    }
+    return variables
+      .slice()
+      .sort((a, b) => (degree.get(b) || 0) - (degree.get(a) || 0) || compareKeys(a, b));
+  }
+
+  function enumerateExactComponent(component, limits) {
+    const variableKeys = orderVariablesForExactSearch(component.variables, component.constraints);
+    const variableIndex = new Map(variableKeys.map((key, index) => [key, index]));
+    const exactConstraints = component.constraints.map((constraint) => ({
+      source: constraint.source,
+      count: constraint.count,
+      indexes: Array.from(constraint.cells)
+        .map((key) => variableIndex.get(key))
+        .filter((index) => Number.isInteger(index)),
+    }));
+    const variableConstraints = Array.from({ length: variableKeys.length }, () => []);
+    exactConstraints.forEach((constraint, constraintIndex) => {
+      for (const variable of constraint.indexes) {
+        variableConstraints[variable].push(constraintIndex);
+      }
+    });
+
+    const mineCounts = exactConstraints.map(() => 0);
+    const remainingCounts = exactConstraints.map((constraint) => constraint.indexes.length);
+    const assignment = Array.from({ length: variableKeys.length }, () => 0);
+    const mineTotals = Array.from({ length: variableKeys.length }, () => 0);
+    let modelCount = 0;
+    let nodeCount = 0;
+    let complete = true;
+
+    function recordModel() {
+      if (modelCount >= limits.maxModels) {
+        complete = false;
+        return;
+      }
+      modelCount += 1;
+      for (let index = 0; index < assignment.length; index += 1) {
+        if (assignment[index] === 1) mineTotals[index] += 1;
+      }
+    }
+
+    function search(position) {
+      if (!complete) return;
+      nodeCount += 1;
+      if (nodeCount > limits.maxNodes) {
+        complete = false;
+        return;
+      }
+
+      if (position === variableKeys.length) {
+        for (let index = 0; index < exactConstraints.length; index += 1) {
+          if (mineCounts[index] !== exactConstraints[index].count) return;
+        }
+        recordModel();
+        return;
+      }
+
+      for (const value of [0, 1]) {
+        assignment[position] = value;
+        let valid = true;
+        for (const constraintIndex of variableConstraints[position]) {
+          remainingCounts[constraintIndex] -= 1;
+          mineCounts[constraintIndex] += value;
+          const constraint = exactConstraints[constraintIndex];
+          if (
+            mineCounts[constraintIndex] > constraint.count ||
+            mineCounts[constraintIndex] + remainingCounts[constraintIndex] < constraint.count
+          ) {
+            valid = false;
+          }
+        }
+
+        if (valid) search(position + 1);
+
+        for (const constraintIndex of variableConstraints[position]) {
+          remainingCounts[constraintIndex] += 1;
+          mineCounts[constraintIndex] -= value;
+        }
+        if (!complete) return;
+      }
+    }
+
+    for (const constraint of exactConstraints) {
+      if (constraint.count < 0 || constraint.count > constraint.indexes.length) {
+        return { complete: true, modelCount: 0, mineKeys: new Set(), safeKeys: new Set(), probabilities: new Map() };
+      }
+    }
+
+    search(0);
+    const mineKeys = new Set();
+    const safeKeys = new Set();
+    const probabilities = new Map();
+    if (!complete || modelCount === 0) {
+      return { complete, modelCount, nodeCount, mineKeys, safeKeys, probabilities };
+    }
+
+    for (let index = 0; index < variableKeys.length; index += 1) {
+      const key = variableKeys[index];
+      if (mineTotals[index] === 0) {
+        safeKeys.add(key);
+      } else if (mineTotals[index] === modelCount) {
+        mineKeys.add(key);
+      } else {
+        probabilities.set(key, mineTotals[index] / modelCount);
+      }
+    }
+
+    return { complete, modelCount, nodeCount, mineKeys, safeKeys, probabilities };
+  }
+
+  function makeExactExplanation(key, conclusion, component, modelCount) {
+    const sources = new Set();
+    for (const constraint of component.constraints) {
+      if (constraint.source) sources.add(constraint.source);
+    }
+    return {
+      key,
+      conclusion,
+      rule: "exact",
+      constraint: {
+        source: "exact",
+        cells: sortedKeys(component.variables),
+        count: null,
+        origin: {
+          type: "exact",
+          modelCount,
+          sources: sortedKeys(sources),
+        },
+      },
+    };
+  }
+
+  function solveExactComponents(constraints, inferredMines, inferredSafe, options = {}) {
+    const limits = {
+      maxCells: options.maxExactCells ?? DEFAULT_MAX_EXACT_CELLS,
+      maxModels: options.maxExactModels ?? DEFAULT_MAX_EXACT_MODELS,
+      maxNodes: options.maxExactNodes ?? DEFAULT_MAX_EXACT_NODES,
+    };
+    const mineKeys = new Set();
+    const safeKeys = new Set();
+    const probabilities = new Map();
+    const explanations = new Map();
+    const stats = {
+      components: 0,
+      solvedComponents: 0,
+      skippedComponents: 0,
+      models: 0,
+      nodes: 0,
+    };
+
+    for (const component of buildConstraintComponents(constraints)) {
+      stats.components += 1;
+      if (component.variables.length > limits.maxCells) {
+        stats.skippedComponents += 1;
+        continue;
+      }
+
+      const result = enumerateExactComponent(component, limits);
+      stats.models += result.modelCount || 0;
+      stats.nodes += result.nodeCount || 0;
+      if (!result.complete || result.modelCount === 0) {
+        stats.skippedComponents += 1;
+        continue;
+      }
+
+      stats.solvedComponents += 1;
+      for (const key of result.mineKeys) {
+        if (!inferredMines.has(key) && !inferredSafe.has(key)) {
+          mineKeys.add(key);
+          explanations.set(key, makeExactExplanation(key, "mine", component, result.modelCount));
+        }
+      }
+      for (const key of result.safeKeys) {
+        if (!inferredMines.has(key) && !inferredSafe.has(key)) {
+          safeKeys.add(key);
+          explanations.set(key, makeExactExplanation(key, "safe", component, result.modelCount));
+        }
+      }
+      for (const [key, probability] of result.probabilities) {
+        if (!inferredMines.has(key) && !inferredSafe.has(key)) {
+          probabilities.set(key, probability);
+        }
+      }
+    }
+
+    return { mineKeys, safeKeys, probabilities, explanations, stats };
+  }
+
   function solveBoard(rawBoard, options = {}) {
     const board = normalizeBoard(rawBoard);
     const inferredMines = new Set();
@@ -449,7 +698,32 @@
     }
 
     constraints = buildConstraints(board, inferredMines, inferredSafe);
+    const exact = solveExactComponents(constraints, inferredMines, inferredSafe, options);
+    for (const key of exact.mineKeys) {
+      if (!inferredMines.has(key)) {
+        inferredMines.add(key);
+        if (!explanations.has(key) && exact.explanations.has(key)) {
+          explanations.set(key, exact.explanations.get(key));
+        }
+      }
+    }
+    for (const key of exact.safeKeys) {
+      if (!inferredSafe.has(key)) {
+        inferredSafe.add(key);
+        if (!explanations.has(key) && exact.explanations.has(key)) {
+          explanations.set(key, exact.explanations.get(key));
+        }
+      }
+    }
+
+    constraints = buildConstraints(board, inferredMines, inferredSafe);
     const probabilities = estimateProbabilities(board, constraints, inferredMines, inferredSafe);
+    for (const [key, probability] of exact.probabilities) {
+      const cell = board.byKey.get(key);
+      if (cell && cell.state === "closed" && !inferredMines.has(key) && !inferredSafe.has(key)) {
+        probabilities.set(key, probability);
+      }
+    }
 
     return {
       safe: Array.from(inferredSafe).map(parseKey),
@@ -466,6 +740,7 @@
         closed: board.cells.filter((cell) => cell.state === "closed").length,
         flags: board.cells.filter((cell) => cell.state === "flag").length,
         iterations,
+        exact: exact.stats,
       },
     };
   }
@@ -622,6 +897,20 @@
       return lines.join("\n");
     }
 
+    if (origin && origin.type === "exact") {
+      lines.push("枚举读法：检查这个局部区域的所有合法雷布局。");
+      lines.push(`橙色层范围：${formatCellList(constraint.cells)}。`);
+      lines.push(
+        `合法布局：${origin.modelCount} 种；当前格在全部布局中${
+          explanation.conclusion === "mine" ? "都是雷" : "都不是雷"
+        }。`
+      );
+      if (origin.sources && origin.sources.length > 0) {
+        lines.push(`数字来源：${formatCellList(origin.sources)}。`);
+      }
+      return lines.join("\n");
+    }
+
     lines.push(`橙色层约束：${constraint.cells.length} 个候选格，剩余 ${constraint.count} 雷。`);
     return lines.join("\n");
   }
@@ -655,6 +944,19 @@
       lines.push(
         `${colorLabel("紫色", "msah-layer-text-2")} 若当前格${targetAssumption}，来源数字会冲突`
       );
+      return lines.join("<br>");
+    }
+
+    if (origin && origin.type === "exact") {
+      lines.push(
+        `${colorLabel("橙色", "msah-layer-text-1")} 精确枚举：${origin.modelCount} 种合法布局`
+      );
+      lines.push(
+        `${colorLabel("紫色", "msah-layer-text-2")} 当前格在全部布局中${
+          explanation.conclusion === "mine" ? "都是雷" : "都不是雷"
+        }`
+      );
+      if (related.layers[0]) lines.push(formatLayerLineHtml(related.layers[0], 0, explanation.key));
       return lines.join("<br>");
     }
 
@@ -695,6 +997,11 @@
       } else if (origin.type === "difference") {
         visitConstraint(origin.subset, depth + 1);
         visitConstraint(origin.superset, depth + 1);
+      } else if (origin.type === "exact") {
+        for (const source of origin.sources || []) {
+          sources.add(source);
+          layer.sources.add(source);
+        }
       }
     }
 
@@ -1053,7 +1360,7 @@
         </div>
         <div class="msah-options">
           <label title="棋盘变化后自动重新分析"><input type="checkbox" data-msah-option="auto"> 自动</label>
-          <label title="对未确定格显示粗略局部概率"><input type="checkbox" data-msah-option="probabilities"> 概率</label>
+          <label title="显示局部雷率，精确枚举优先"><input type="checkbox" data-msah-option="probabilities"> 概率</label>
           <label title="显示悬停推理说明和解释高亮"><input type="checkbox" data-msah-option="explanations"> 说明</label>
         </div>
         <div class="msah-explain" data-msah-explain>
