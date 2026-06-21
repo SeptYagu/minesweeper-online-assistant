@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.2.22
+// @version      0.2.23
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -15,7 +15,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.2.22";
+  const ASSISTANT_VERSION = "0.2.23";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const SALT_LENGTH = 8;
@@ -23,6 +23,7 @@
   const TYPE_CLASS_RE = /^(?:[a-z0-9]+_)?type([0-8])$/i;
   const FLAG_CLASS_RE = /^[a-z0-9]+_flag$/i;
   const originalAriaLabels = new WeakMap();
+  const assistantLabeledElements = new Set();
 
   function keyOf(x, y) {
     return `${x},${y}`;
@@ -1176,13 +1177,19 @@
     const all = getAllHighlightClasses(salt);
     const labelClasses = [names.safe, names.mine, names.prob, names.flagQ];
     const selector = all.map((c) => `.${c}`).join(", ");
+    const handled = new Set();
     for (const element of doc.querySelectorAll(selector)) {
+      handled.add(element);
       clearHighlightElement(element, all, labelClasses);
+    }
+    for (const element of Array.from(assistantLabeledElements)) {
+      if (!handled.has(element)) restoreOriginalAriaLabel(element);
     }
   }
 
   function clearHighlightElement(element, allClasses, labelClasses) {
-    const hasAssistantLabel = labelClasses.some((cls) => element.classList.contains(cls));
+    const hasAssistantLabel =
+      labelClasses.some((cls) => element.classList.contains(cls)) || originalAriaLabels.has(element);
     for (const cls of allClasses) element.classList.remove(cls);
     if (hasAssistantLabel) restoreOriginalAriaLabel(element);
     element.removeAttribute("data-msah-explain-label");
@@ -1232,16 +1239,19 @@
     if (!originalAriaLabels.has(element)) {
       originalAriaLabels.set(element, element.getAttribute("aria-label"));
     }
+    assistantLabeledElements.add(element);
     element.setAttribute("aria-label", label);
   }
 
   function restoreOriginalAriaLabel(element) {
     if (!originalAriaLabels.has(element)) {
+      assistantLabeledElements.delete(element);
       element.removeAttribute("aria-label");
       return;
     }
     const original = originalAriaLabels.get(element);
     originalAriaLabels.delete(element);
+    assistantLabeledElements.delete(element);
     if (original === null) {
       element.removeAttribute("aria-label");
     } else {
@@ -1296,13 +1306,17 @@
     return match ? keyOf(Number(match[1]), Number(match[2])) : null;
   }
 
-  function getCellElementByKey(doc, key) {
+  function getCellElementByKey(doc, key, board) {
+    if (board) {
+      const cell = board.byKey && board.byKey.get(key);
+      return cell && cell.element ? cell.element : null;
+    }
     const point = parseKey(key);
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
     return doc.getElementById(`cell_${point.x}_${point.y}`);
   }
 
-  function renderExplanationHighlights(doc, salt, targetElement, explanation) {
+  function renderExplanationHighlights(doc, salt, targetElement, explanation, board) {
     clearExplanationHighlights(doc, salt);
     if (!targetElement || !explanation) return;
 
@@ -1314,7 +1328,7 @@
     const candidateClass = names.explainLayers[0];
     for (const key of related.candidatePeers || []) {
       if (key === explanation.key) continue;
-      const element = getCellElementByKey(doc, key);
+      const element = getCellElementByKey(doc, key, board);
       if (element && element !== targetElement) {
         element.classList.add(candidateClass);
         painted.add(key);
@@ -1325,7 +1339,7 @@
       const className = names.explainLayers[Math.min(index, names.explainLayers.length - 1)];
       for (const key of layer.peers) {
         if (painted.has(key)) continue;
-        const element = getCellElementByKey(doc, key);
+        const element = getCellElementByKey(doc, key, board);
         if (element && element !== targetElement) {
           element.classList.add(className);
           painted.add(key);
@@ -1333,7 +1347,7 @@
       }
       for (const key of layer.sources) {
         if (painted.has(key)) continue;
-        const element = getCellElementByKey(doc, key);
+        const element = getCellElementByKey(doc, key, board);
         if (element && element !== targetElement) {
           element.classList.add(className);
           painted.add(key);
@@ -1387,6 +1401,7 @@
       detachObserver();
       latestBoard = readBoardFromDom(doc);
       if (!latestBoard) {
+        latestResult = null;
         clearHighlights(doc, salt);
         updateExplanation(panel, null);
         updateStatus(panel, null, null);
@@ -1474,14 +1489,16 @@
 
     doc.addEventListener("mouseover", (event) => {
       if (!settings.showExplanations) return;
-      if (!latestResult || !event.target || typeof event.target.closest !== "function") return;
+      if (!latestBoard || !latestResult || !event.target || typeof event.target.closest !== "function") return;
       const cellElement = event.target.closest("div.cell[id^='cell_']");
       const key = cellElementKey(cellElement);
       if (!key) return;
+      const boardCell = latestBoard.byKey && latestBoard.byKey.get(key);
+      if (!boardCell || boardCell.element !== cellElement) return;
       const explanation = latestResult.explanations && latestResult.explanations.get(key);
       if (!explanation) return;
       updateExplanation(panel, explanation);
-      renderExplanationHighlights(doc, salt, cellElement, explanation);
+      renderExplanationHighlights(doc, salt, cellElement, explanation, latestBoard);
     });
 
     doc.addEventListener("keydown", (event) => {

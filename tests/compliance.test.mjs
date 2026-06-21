@@ -530,4 +530,66 @@ function makeFakeDoc() {
   );
 }
 
+{
+  const doc = makeFakeDoc();
+  const result = {
+    safeKeys: new Set(["0,0"]),
+    mineKeys: new Set(),
+    probabilities: new Map(),
+  };
+  const fakeCell = doc.createElement("div");
+  fakeCell.setAttribute("aria-label", "original site label");
+  doc.body.appendChild(fakeCell);
+  const board = { cells: [{ key: "0,0", state: "closed", element: fakeCell }] };
+
+  core._private.renderHighlights(board, result, { showProbabilities: false }, doc, "deadbeef");
+  fakeCell.classList.remove("msah-deadbeef-safe");
+  assert.equal(fakeCell.getAttribute("aria-label"), "OK");
+  core._private.clearHighlights(doc, "deadbeef");
+  assert.equal(
+    fakeCell.getAttribute("aria-label"),
+    "original site label",
+    "clearHighlights should restore aria-label even if site removed assistant classes first"
+  );
+}
+
+{
+  const doc = makeFakeDoc();
+  const target = doc.createElement("div");
+  const source = doc.createElement("div");
+  const outside = doc.createElement("div");
+  target.id = "cell_0_0";
+  source.id = "cell_1_0";
+  outside.id = "cell_2_0";
+  doc.body.appendChild(target);
+  doc.body.appendChild(source);
+  doc.body.appendChild(outside);
+
+  const board = {
+    byKey: new Map([
+      ["0,0", { element: target }],
+      ["1,0", { element: source }],
+    ]),
+  };
+  const explanation = {
+    key: "0,0",
+    conclusion: "safe",
+    constraint: {
+      source: "1,0",
+      cells: ["0,0", "2,0"],
+      count: 0,
+      origin: { type: "number", source: "1,0", number: 1, knownMines: 1 },
+    },
+  };
+
+  core._private.renderExplanationHighlights(doc, "deadbeef", target, explanation, board);
+  assert.equal(target._classes.has("msah-deadbeef-explain-focus"), true);
+  assert.equal(source._classes.has("msah-deadbeef-explain-layer-1"), true);
+  assert.equal(
+    outside._classes.has("msah-deadbeef-explain-layer-1"),
+    false,
+    "explanation highlighting should not fall back to cells outside the current board"
+  );
+}
+
 console.log("compliance tests passed");
