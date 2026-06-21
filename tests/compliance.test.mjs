@@ -345,6 +345,63 @@ function makeFakeDoc() {
     false,
     "real board class changes must still trigger re-analysis"
   );
+  assert.equal(
+    core._private.isRelevantAutoAnalyzeMutation(
+      {
+        type: "attributes",
+        attributeName: "class",
+        oldValue: "cell opened hd_type1 msah-deadbeef-safe",
+        target: { className: "cell opened hd_type1 msah-deadbeef-safe msah-deadbeef-explain-focus" },
+      },
+      "deadbeef"
+    ),
+    false,
+    "assistant-only class mutations should not trigger auto analysis"
+  );
+  assert.equal(
+    core._private.isRelevantAutoAnalyzeMutation(
+      {
+        type: "childList",
+        target: { nodeType: 1, id: "content" },
+        addedNodes: [{ nodeType: 1, id: "AreaBlock" }],
+        removedNodes: [],
+      },
+      "deadbeef"
+    ),
+    true,
+    "replacing or inserting AreaBlock should trigger auto analysis"
+  );
+  assert.equal(
+    core._private.isRelevantAutoAnalyzeMutation(
+      {
+        type: "childList",
+        target: { nodeType: 1, id: "msah-panel-deadbeef" },
+        addedNodes: [{ nodeType: 3 }],
+        removedNodes: [],
+      },
+      "deadbeef"
+    ),
+    false,
+    "unrelated assistant panel child changes should not trigger auto analysis"
+  );
+}
+
+{
+  const body = { nodeType: 1, id: "body" };
+  const area = { nodeType: 1, id: "AreaBlock" };
+  const doc = {
+    body,
+    getElementById(id) {
+      return id === "AreaBlock" ? area : null;
+    },
+  };
+  const targets = core._private.getAutoAnalyzeObserverTargets(doc);
+  assert.equal(targets.length, 2);
+  assert.equal(targets[0].target, body, "body should be watched for board root replacement");
+  assert.equal(targets[0].options.childList, true);
+  assert.equal(targets[0].options.subtree, true);
+  assert.equal(targets[1].target, area, "AreaBlock should still be watched for cell class changes");
+  assert.equal(targets[1].options.attributes, true);
 }
 
 {

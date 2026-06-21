@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.2.28
+// @version      0.2.29
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -15,7 +15,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.2.28";
+  const ASSISTANT_VERSION = "0.2.29";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const SALT_LENGTH = 8;
@@ -1789,6 +1789,75 @@
     return before === after;
   }
 
+  function nodeContainsBoard(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.id === "AreaBlock") return true;
+    if (typeof node.matches === "function" && node.matches("div.cell[id^='cell_']")) return true;
+    return (
+      typeof node.querySelector === "function" &&
+      !!(node.querySelector("#AreaBlock") || node.querySelector("div.cell[id^='cell_']"))
+    );
+  }
+
+  function isBoardStructureMutation(mutation) {
+    if (!mutation || mutation.type !== "childList") return false;
+    if (nodeContainsBoard(mutation.target)) return true;
+    const changed = [...Array.from(mutation.addedNodes || []), ...Array.from(mutation.removedNodes || [])];
+    return changed.some(nodeContainsBoard);
+  }
+
+  function isRelevantAutoAnalyzeMutation(mutation, salt) {
+    if (isAssistantOnlyClassMutation(mutation, salt)) return false;
+    if (mutation && mutation.type === "attributes") return true;
+    return isBoardStructureMutation(mutation);
+  }
+
+  function getAutoAnalyzeObserverTargets(doc = document) {
+    const targets = [];
+    const body = doc && doc.body ? doc.body : null;
+    const area = doc && typeof doc.getElementById === "function" ? doc.getElementById("AreaBlock") : null;
+
+    if (body) {
+      targets.push({
+        target: body,
+        options: { childList: true, subtree: true },
+      });
+    }
+
+    if (area && area !== body) {
+      targets.push({
+        target: area,
+        options: {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["class"],
+          attributeOldValue: true,
+        },
+      });
+    } else if (!body && area) {
+      targets.push({
+        target: area,
+        options: {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["class"],
+          attributeOldValue: true,
+        },
+      });
+    }
+
+    if (targets.length === 0 && doc) {
+      targets.push({
+        target: doc,
+        options: { childList: true, subtree: true },
+      });
+    }
+
+    return targets;
+  }
+
   function isEditableElement(element) {
     if (!element) return false;
     const tag = (element.tagName || "").toLowerCase();
@@ -2045,19 +2114,14 @@
       detachObserver();
       if (!shouldAutoAnalyze(settings, analysisVisible)) return;
       observer = new MutationObserver((mutations) => {
-        if (mutations.length > 0 && mutations.every((mutation) => isAssistantOnlyClassMutation(mutation, salt))) {
+        if (!mutations.some((mutation) => isRelevantAutoAnalyzeMutation(mutation, salt))) {
           return;
         }
         scheduleAnalyze();
       });
-      const target = doc.getElementById("AreaBlock") || doc.body;
-      observer.observe(target, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ["class"],
-        attributeOldValue: true,
-      });
+      for (const entry of getAutoAnalyzeObserverTargets(doc)) {
+        observer.observe(entry.target, entry.options);
+      }
     }
 
     function analyze(options = {}) {
@@ -2201,9 +2265,12 @@
       getHighlightForCell,
       getInstallSalt,
       getStorageKey,
+      getAutoAnalyzeObserverTargets,
       isAssistantOnlyClassMutation,
       isAnalysisShortcut,
+      isBoardStructureMutation,
       isEditableElement,
+      isRelevantAutoAnalyzeMutation,
       loadSettings,
       migrateSettings,
       normalizeBoard,
