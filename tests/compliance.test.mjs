@@ -378,6 +378,71 @@ function makeFakeDoc() {
 }
 
 {
+  const digits = {
+    top_area_mines_100: { className: "top-area-num0 top-area-num" },
+    top_area_mines_10: { className: "top-area-num0 top-area-num" },
+    top_area_mines_1: { className: "top-area-num2 top-area-num" },
+  };
+  const doc = {
+    getElementById(id) {
+      return digits[id] || null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+  };
+  const board = {
+    cells: [{ state: "flag" }, { state: "closed" }, { state: "closed" }],
+  };
+  assert.equal(core._private.readRemainingMinesFromDom(doc), 2);
+  assert.equal(core._private.readTotalMinesFromDom(doc, board), 3);
+}
+
+{
+  const cappedDigits = {
+    top_area_mines_100: { className: "top-area-num9 top-area-num" },
+    top_area_mines_10: { className: "top-area-num9 top-area-num" },
+    top_area_mines_1: { className: "top-area-num9 top-area-num" },
+  };
+  const hintedDigits = {
+    top_area_mines_100: { className: "top-area-num0 top-area-num" },
+    top_area_mines_10: { className: "top-area-num0 top-area-num" },
+    top_area_mines_1: { className: "top-area-num2 top-area-num" },
+  };
+  const board = { cells: [{ state: "closed" }, { state: "closed" }] };
+  assert.equal(
+    core._private.readTotalMinesFromDom(
+      {
+        getElementById(id) {
+          return cappedDigits[id] || null;
+        },
+        querySelectorAll() {
+          return [];
+        },
+      },
+      board
+    ),
+    null,
+    "capped mine counter should not become a global total"
+  );
+  assert.equal(
+    core._private.readTotalMinesFromDom(
+      {
+        getElementById(id) {
+          return hintedDigits[id] || null;
+        },
+        querySelectorAll() {
+          return [{}];
+        },
+      },
+      board
+    ),
+    null,
+    "mine counter should be ignored while site hints alter the display"
+  );
+}
+
+{
   assert.equal(
     core._private.isAnalysisShortcut({
       code: "Backquote",

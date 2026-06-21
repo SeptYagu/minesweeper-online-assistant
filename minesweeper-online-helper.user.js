@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.2.26
+// @version      0.2.27
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -15,13 +15,14 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.2.26";
+  const ASSISTANT_VERSION = "0.2.27";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const SALT_LENGTH = 8;
   const DEFAULT_MAX_EXACT_CELLS = 18;
   const DEFAULT_MAX_EXACT_MODELS = 50000;
   const DEFAULT_MAX_EXACT_NODES = 250000;
+  const DEFAULT_MAX_GLOBAL_OUTSIDE_CELLS = 512;
   const CELL_ID_RE = /^cell_(\d+)_(\d+)$/;
   const TYPE_CLASS_RE = /^(?:[a-z0-9]+_)?type([0-8])$/i;
   const FLAG_CLASS_RE = /^[a-z0-9]+_flag$/i;
@@ -475,6 +476,8 @@
     const remainingCounts = exactConstraints.map((constraint) => constraint.indexes.length);
     const assignment = Array.from({ length: variableKeys.length }, () => 0);
     const mineTotals = Array.from({ length: variableKeys.length }, () => 0);
+    const modelsByMineCount = new Map();
+    const mineTotalsByMineCount = new Map();
     let modelCount = 0;
     let nodeCount = 0;
     let complete = true;
@@ -485,8 +488,18 @@
         return;
       }
       modelCount += 1;
+      let minesInModel = 0;
+      for (const value of assignment) minesInModel += value;
+      modelsByMineCount.set(minesInModel, (modelsByMineCount.get(minesInModel) || 0) + 1);
+      if (!mineTotalsByMineCount.has(minesInModel)) {
+        mineTotalsByMineCount.set(minesInModel, Array.from({ length: assignment.length }, () => 0));
+      }
+      const bucketTotals = mineTotalsByMineCount.get(minesInModel);
       for (let index = 0; index < assignment.length; index += 1) {
-        if (assignment[index] === 1) mineTotals[index] += 1;
+        if (assignment[index] === 1) {
+          mineTotals[index] += 1;
+          bucketTotals[index] += 1;
+        }
       }
     }
 
@@ -533,7 +546,16 @@
 
     for (const constraint of exactConstraints) {
       if (constraint.count < 0 || constraint.count > constraint.indexes.length) {
-        return { complete: true, modelCount: 0, mineKeys: new Set(), safeKeys: new Set(), probabilities: new Map() };
+        return {
+          complete: true,
+          modelCount: 0,
+          variableKeys,
+          modelsByMineCount,
+          mineTotalsByMineCount,
+          mineKeys: new Set(),
+          safeKeys: new Set(),
+          probabilities: new Map(),
+        };
       }
     }
 
@@ -542,7 +564,17 @@
     const safeKeys = new Set();
     const probabilities = new Map();
     if (!complete || modelCount === 0) {
-      return { complete, modelCount, nodeCount, mineKeys, safeKeys, probabilities };
+      return {
+        complete,
+        modelCount,
+        nodeCount,
+        variableKeys,
+        modelsByMineCount,
+        mineTotalsByMineCount,
+        mineKeys,
+        safeKeys,
+        probabilities,
+      };
     }
 
     for (let index = 0; index < variableKeys.length; index += 1) {
@@ -556,7 +588,17 @@
       }
     }
 
-    return { complete, modelCount, nodeCount, mineKeys, safeKeys, probabilities };
+    return {
+      complete,
+      modelCount,
+      nodeCount,
+      variableKeys,
+      modelsByMineCount,
+      mineTotalsByMineCount,
+      mineKeys,
+      safeKeys,
+      probabilities,
+    };
   }
 
   function makeExactExplanation(key, conclusion, component, modelCount) {
@@ -591,6 +633,7 @@
     const safeKeys = new Set();
     const probabilities = new Map();
     const explanations = new Map();
+    const components = [];
     const stats = {
       components: 0,
       solvedComponents: 0,
@@ -615,6 +658,13 @@
       }
 
       stats.solvedComponents += 1;
+      components.push({
+        component,
+        variableKeys: result.variableKeys,
+        modelCount: result.modelCount,
+        modelsByMineCount: result.modelsByMineCount,
+        mineTotalsByMineCount: result.mineTotalsByMineCount,
+      });
       for (const key of result.mineKeys) {
         if (!inferredMines.has(key) && !inferredSafe.has(key)) {
           mineKeys.add(key);
@@ -634,6 +684,215 @@
       }
     }
 
+    return { mineKeys, safeKeys, probabilities, explanations, components, stats };
+  }
+
+  function addWeightedCount(target, key, value) {
+    if (!Number.isFinite(value) || value <= 0) return false;
+    target.set(key, (target.get(key) || 0) + value);
+    return Number.isFinite(target.get(key));
+  }
+
+  function combineDistributions(left, right, maxTotal) {
+    const result = new Map();
+    for (const [leftCount, leftWays] of left) {
+      for (const [rightCount, rightWays] of right) {
+        const count = leftCount + rightCount;
+        if (count > maxTotal) continue;
+        if (!addWeightedCount(result, count, leftWays * rightWays)) return null;
+      }
+    }
+    return result;
+  }
+
+  function combinationDistribution(count, maxTotal) {
+    const result = new Map();
+    if (count < 0 || count > DEFAULT_MAX_GLOBAL_OUTSIDE_CELLS) return null;
+    let value = 1;
+    for (let mines = 0; mines <= count && mines <= maxTotal; mines += 1) {
+      result.set(mines, value);
+      if (mines < count) {
+        value = (value * (count - mines)) / (mines + 1);
+        if (!Number.isFinite(value)) return null;
+      }
+    }
+    return result;
+  }
+
+  function combinationValue(count, choose) {
+    if (choose < 0 || choose > count) return 0;
+    let value = 1;
+    for (let index = 0; index < choose; index += 1) {
+      value = (value * (count - index)) / (index + 1);
+      if (!Number.isFinite(value)) return Infinity;
+    }
+    return value;
+  }
+
+  function isAllModels(value, total) {
+    return Math.abs(value - total) <= Math.max(1, total) * 1e-12;
+  }
+
+  function makeGlobalExplanation(key, conclusion, totalMines, modelCount, cells, sources) {
+    return {
+      key,
+      conclusion,
+      rule: "global",
+      constraint: {
+        source: "global",
+        cells: sortedKeys(cells),
+        count: totalMines,
+        origin: {
+          type: "global",
+          totalMines,
+          modelCount,
+          sources: sortedKeys(sources || []),
+        },
+      },
+    };
+  }
+
+  function solveGlobalMines(board, exact, knownMines, knownSafe, options = {}) {
+    const totalMines = Number.isInteger(board.totalMines) ? board.totalMines : null;
+    const stats = {
+      enabled: false,
+      totalMines,
+      totalModels: 0,
+      outsideCells: 0,
+      reason: null,
+    };
+    if (totalMines === null) {
+      stats.reason = "no-total";
+      return { mineKeys: new Set(), safeKeys: new Set(), probabilities: new Map(), explanations: new Map(), stats };
+    }
+    if (exact.stats.skippedComponents > 0) {
+      stats.reason = "skipped-components";
+      return { mineKeys: new Set(), safeKeys: new Set(), probabilities: new Map(), explanations: new Map(), stats };
+    }
+
+    const maxOutsideCells = options.maxGlobalOutsideCells ?? DEFAULT_MAX_GLOBAL_OUTSIDE_CELLS;
+    const componentVariables = new Set();
+    for (const component of exact.components) {
+      for (const key of component.variableKeys) componentVariables.add(key);
+    }
+
+    const outsideKeys = [];
+    for (const cell of board.cells) {
+      if (cell.state !== "closed" && cell.state !== "flag") continue;
+      if (knownMines.has(cell.key) || knownSafe.has(cell.key) || componentVariables.has(cell.key)) continue;
+      outsideKeys.push(cell.key);
+    }
+    stats.outsideCells = outsideKeys.length;
+    if (outsideKeys.length > maxOutsideCells) {
+      stats.reason = "outside-limit";
+      return { mineKeys: new Set(), safeKeys: new Set(), probabilities: new Map(), explanations: new Map(), stats };
+    }
+
+    const remainingMines = totalMines - knownMines.size;
+    const componentCapacity = exact.components.reduce((sum, component) => sum + component.variableKeys.length, 0);
+    if (remainingMines < 0 || remainingMines > componentCapacity + outsideKeys.length) {
+      stats.reason = "invalid-total";
+      return { mineKeys: new Set(), safeKeys: new Set(), probabilities: new Map(), explanations: new Map(), stats };
+    }
+
+    const componentDistributions = exact.components.map((component) => component.modelsByMineCount);
+    const outsideDistribution = combinationDistribution(outsideKeys.length, remainingMines);
+    if (!outsideDistribution) {
+      stats.reason = "outside-combinations";
+      return { mineKeys: new Set(), safeKeys: new Set(), probabilities: new Map(), explanations: new Map(), stats };
+    }
+
+    const distributions = [...componentDistributions, outsideDistribution];
+    const prefix = [new Map([[0, 1]])];
+    for (let index = 0; index < distributions.length; index += 1) {
+      const next = combineDistributions(prefix[index], distributions[index], remainingMines);
+      if (!next) {
+        stats.reason = "overflow";
+        return { mineKeys: new Set(), safeKeys: new Set(), probabilities: new Map(), explanations: new Map(), stats };
+      }
+      prefix.push(next);
+    }
+
+    const suffix = Array.from({ length: distributions.length + 1 }, () => new Map());
+    suffix[distributions.length].set(0, 1);
+    for (let index = distributions.length - 1; index >= 0; index -= 1) {
+      const next = combineDistributions(distributions[index], suffix[index + 1], remainingMines);
+      if (!next) {
+        stats.reason = "overflow";
+        return { mineKeys: new Set(), safeKeys: new Set(), probabilities: new Map(), explanations: new Map(), stats };
+      }
+      suffix[index] = next;
+    }
+
+    const totalModels = prefix[distributions.length].get(remainingMines) || 0;
+    if (!Number.isFinite(totalModels) || totalModels <= 0) {
+      stats.reason = "no-global-models";
+      return { mineKeys: new Set(), safeKeys: new Set(), probabilities: new Map(), explanations: new Map(), stats };
+    }
+
+    const mineKeys = new Set();
+    const safeKeys = new Set();
+    const probabilities = new Map();
+    const explanations = new Map();
+
+    exact.components.forEach((component, componentIndex) => {
+      const sources = new Set();
+      for (const constraint of component.component.constraints) {
+        if (constraint.source) sources.add(constraint.source);
+      }
+      component.variableKeys.forEach((key, variableIndex) => {
+        let mineWays = 0;
+        for (const [componentMineCount, bucketTotals] of component.mineTotalsByMineCount) {
+          const cellMineModels = bucketTotals[variableIndex] || 0;
+          if (cellMineModels === 0) continue;
+          for (const [leftCount, leftWays] of prefix[componentIndex]) {
+            const rightNeed = remainingMines - leftCount - componentMineCount;
+            const rightWays = suffix[componentIndex + 1].get(rightNeed) || 0;
+            if (rightWays > 0) mineWays += leftWays * cellMineModels * rightWays;
+          }
+        }
+        if (!Number.isFinite(mineWays)) return;
+        if (mineWays === 0) {
+          safeKeys.add(key);
+          explanations.set(
+            key,
+            makeGlobalExplanation(key, "safe", totalMines, totalModels, component.variableKeys, sources)
+          );
+        } else if (isAllModels(mineWays, totalModels)) {
+          mineKeys.add(key);
+          explanations.set(
+            key,
+            makeGlobalExplanation(key, "mine", totalMines, totalModels, component.variableKeys, sources)
+          );
+        } else {
+          probabilities.set(key, mineWays / totalModels);
+        }
+      });
+    });
+
+    if (outsideKeys.length > 0) {
+      for (const key of outsideKeys) {
+        let mineWays = 0;
+        for (const [componentMineCount, componentWays] of prefix[exact.components.length]) {
+          const outsideMines = remainingMines - componentMineCount;
+          mineWays += componentWays * combinationValue(outsideKeys.length - 1, outsideMines - 1);
+        }
+        if (!Number.isFinite(mineWays)) continue;
+        if (mineWays === 0) {
+          safeKeys.add(key);
+          explanations.set(key, makeGlobalExplanation(key, "safe", totalMines, totalModels, outsideKeys, []));
+        } else if (isAllModels(mineWays, totalModels)) {
+          mineKeys.add(key);
+          explanations.set(key, makeGlobalExplanation(key, "mine", totalMines, totalModels, outsideKeys, []));
+        } else {
+          probabilities.set(key, mineWays / totalModels);
+        }
+      }
+    }
+
+    stats.enabled = true;
+    stats.reason = "ok";
+    stats.totalModels = totalModels;
     return { mineKeys, safeKeys, probabilities, explanations, stats };
   }
 
@@ -698,7 +957,10 @@
     }
 
     constraints = buildConstraints(board, inferredMines, inferredSafe);
+    const knownMinesBeforeExact = new Set(inferredMines);
+    const knownSafeBeforeExact = new Set(inferredSafe);
     const exact = solveExactComponents(constraints, inferredMines, inferredSafe, options);
+    const global = solveGlobalMines(board, exact, knownMinesBeforeExact, knownSafeBeforeExact, options);
     for (const key of exact.mineKeys) {
       if (!inferredMines.has(key)) {
         inferredMines.add(key);
@@ -715,10 +977,32 @@
         }
       }
     }
+    for (const key of global.mineKeys) {
+      if (!inferredMines.has(key) && !inferredSafe.has(key)) {
+        inferredMines.add(key);
+        if (!explanations.has(key) && global.explanations.has(key)) {
+          explanations.set(key, global.explanations.get(key));
+        }
+      }
+    }
+    for (const key of global.safeKeys) {
+      if (!inferredSafe.has(key) && !inferredMines.has(key)) {
+        inferredSafe.add(key);
+        if (!explanations.has(key) && global.explanations.has(key)) {
+          explanations.set(key, global.explanations.get(key));
+        }
+      }
+    }
 
     constraints = buildConstraints(board, inferredMines, inferredSafe);
     const probabilities = estimateProbabilities(board, constraints, inferredMines, inferredSafe);
     for (const [key, probability] of exact.probabilities) {
+      const cell = board.byKey.get(key);
+      if (cell && cell.state === "closed" && !inferredMines.has(key) && !inferredSafe.has(key)) {
+        probabilities.set(key, probability);
+      }
+    }
+    for (const [key, probability] of global.probabilities) {
       const cell = board.byKey.get(key);
       if (cell && cell.state === "closed" && !inferredMines.has(key) && !inferredSafe.has(key)) {
         probabilities.set(key, probability);
@@ -739,8 +1023,10 @@
         open: board.cells.filter((cell) => cell.state === "open").length,
         closed: board.cells.filter((cell) => cell.state === "closed").length,
         flags: board.cells.filter((cell) => cell.state === "flag").length,
+        totalMines: board.totalMines ?? null,
         iterations,
         exact: exact.stats,
+        global: global.stats,
       },
     };
   }
@@ -911,6 +1197,20 @@
       return lines.join("\n");
     }
 
+    if (origin && origin.type === "global") {
+      lines.push("全局读法：把总雷数和所有局部合法布局一起计算。");
+      lines.push(`全局总雷数：${origin.totalMines}。`);
+      lines.push(
+        `合法全局布局：${origin.modelCount} 种；当前格在全部布局中${
+          explanation.conclusion === "mine" ? "都是雷" : "都不是雷"
+        }。`
+      );
+      if (origin.sources && origin.sources.length > 0) {
+        lines.push(`相关数字来源：${formatCellList(origin.sources)}。`);
+      }
+      return lines.join("\n");
+    }
+
     lines.push(`橙色层约束：${constraint.cells.length} 个候选格，剩余 ${constraint.count} 雷。`);
     return lines.join("\n");
   }
@@ -960,6 +1260,19 @@
       return lines.join("<br>");
     }
 
+    if (origin && origin.type === "global") {
+      lines.push(
+        `${colorLabel("橙色", "msah-layer-text-1")} 全局雷数：${origin.totalMines} 雷`
+      );
+      lines.push(
+        `${colorLabel("紫色", "msah-layer-text-2")} ${origin.modelCount} 种全局布局中当前格${
+          explanation.conclusion === "mine" ? "都是雷" : "都不是雷"
+        }`
+      );
+      if (related.layers[0]) lines.push(formatLayerLineHtml(related.layers[0], 0, explanation.key));
+      return lines.join("<br>");
+    }
+
     lines.push(formatLayerLineHtml(related.layers[0], 0, explanation.key));
     return lines.join("<br>");
   }
@@ -1002,6 +1315,11 @@
           sources.add(source);
           layer.sources.add(source);
         }
+      } else if (origin.type === "global") {
+        for (const source of origin.sources || []) {
+          sources.add(source);
+          layer.sources.add(source);
+        }
       }
     }
 
@@ -1039,6 +1357,47 @@
 
     if (cells.length === 0) return null;
     return normalizeBoard({ cells });
+  }
+
+  function readTopAreaDigit(element) {
+    if (!element) return null;
+    for (const className of classNamesOf(element.className || element.classList)) {
+      const match = className.match(/^(?:[a-z0-9]+_)?top-area-num(-|[0-9])$/i);
+      if (match) return match[1] === "-" ? "-" : Number(match[1]);
+    }
+    return null;
+  }
+
+  function readRemainingMinesFromDom(doc = document) {
+    if (!doc || typeof doc.getElementById !== "function") return null;
+    const hundreds = readTopAreaDigit(doc.getElementById("top_area_mines_100"));
+    const tens = readTopAreaDigit(doc.getElementById("top_area_mines_10"));
+    const ones = readTopAreaDigit(doc.getElementById("top_area_mines_1"));
+    if (hundreds === null || tens === null || ones === null) return null;
+    if (hundreds === "-") return -(Number(tens || 0) * 10 + Number(ones || 0));
+    if (tens === "-") return -Number(ones || 0);
+    if (ones === "-") return null;
+    return Number(hundreds) * 100 + Number(tens) * 10 + Number(ones);
+  }
+
+  function hasActiveMineCountHint(doc = document) {
+    if (!doc || typeof doc.querySelectorAll !== "function") return false;
+    try {
+      return doc.querySelectorAll(".hint-flag, .hint-flag-mc").length > 0;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function readTotalMinesFromDom(doc = document, board = null) {
+    if (!board || !board.cells || hasActiveMineCountHint(doc)) return null;
+    const remaining = readRemainingMinesFromDom(doc);
+    if (!Number.isInteger(remaining) || remaining < 0 || remaining >= 999) return null;
+    const flags = board.cells.filter((cell) => cell.state === "flag").length;
+    const hidden = board.cells.filter((cell) => cell.state === "closed" || cell.state === "flag").length;
+    const total = remaining + flags;
+    if (!Number.isInteger(total) || total < 0 || total > hidden) return null;
+    return total;
   }
 
   function ensureStyle(doc, salt) {
@@ -1587,6 +1946,7 @@
 
     status.textContent =
       `棋盘 ${result.stats.width}x${result.stats.height} | ` +
+      (Number.isInteger(result.stats.totalMines) ? `总雷 ${result.stats.totalMines} | ` : "") +
       `安全 ${result.safe.length} | 确定雷 ${result.mines.length} | ` +
       `未开 ${result.stats.closed} | 旗 ${result.stats.flags}` +
       (note ? ` | ${note}` : "");
@@ -1715,6 +2075,7 @@
         if (attach) attachObserver();
         return;
       }
+      latestBoard.totalMines = readTotalMinesFromDom(doc, latestBoard);
       latestResult = solveBoard(latestBoard);
       renderHighlights(latestBoard, latestResult, settings, doc, salt);
       updateExplanation(panel, null);
@@ -1849,6 +2210,8 @@
       migrateSettings,
       normalizeBoard,
       readBoardFromDom,
+      readRemainingMinesFromDom,
+      readTotalMinesFromDom,
       relativeCellName,
       renderHighlights,
       renderExplanationHighlights,

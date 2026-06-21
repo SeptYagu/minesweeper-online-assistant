@@ -17,8 +17,8 @@ function c(x, y, state, number = null) {
   return { x, y, state, number };
 }
 
-function solve(cells) {
-  return core.solveBoard({ cells });
+function solve(cells, extra = {}) {
+  return core.solveBoard({ cells, ...extra });
 }
 
 function keys(items) {
@@ -144,6 +144,29 @@ function fakeCell(id) {
   assert.equal(explanation.constraint.origin.type, "exact");
   assert.match(core._private.formatExplanation(explanation), /枚举读法/);
   assert.match(core._private.formatExplanationHtml(explanation), /精确枚举/);
+}
+
+{
+  const cells = [
+    c(0, 0, "open", 1),
+    c(1, 0, "closed"),
+    c(2, 0, "closed"),
+    c(0, 1, "closed"),
+    c(1, 1, "closed"),
+    c(2, 1, "closed"),
+  ];
+  const result = solve(cells, { width: 3, height: 2, totalMines: 1 });
+  assert.equal(result.safeKeys.has("2,0"), true);
+  assert.equal(result.safeKeys.has("2,1"), true);
+  assert.equal(result.mineKeys.size, 0);
+  assert.equal(result.stats.global.enabled, true);
+  assert.equal(result.stats.global.totalMines, 1);
+  const explanation = result.explanations.get("2,0");
+  assert.equal(explanation.conclusion, "safe");
+  assert.equal(explanation.rule, "global");
+  assert.equal(explanation.constraint.origin.type, "global");
+  assert.match(core._private.formatExplanation(explanation), /全局读法/);
+  assert.match(core._private.formatExplanationHtml(explanation), /全局雷数/);
 }
 
 {

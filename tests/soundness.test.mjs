@@ -21,6 +21,14 @@ function bit(mask, index) {
   return (mask & (1 << index)) !== 0;
 }
 
+function bitCount(mask) {
+  let count = 0;
+  for (let rest = mask; rest > 0; rest >>>= 1) {
+    count += rest & 1;
+  }
+  return count;
+}
+
 function key(index, width) {
   const { x, y } = idxToCell(index, width);
   return core.keyOf(x, y);
@@ -60,7 +68,8 @@ function makeCells(width, height, actualMineMask, openMask, flagMask) {
   return cells;
 }
 
-function isConsistent(mask, width, height, cells) {
+function isConsistent(mask, width, height, cells, totalMines = null) {
+  if (Number.isInteger(totalMines) && bitCount(mask) !== totalMines) return false;
   for (const cell of cells) {
     if (cell.state !== "open") continue;
     const index = cell.y * width + cell.x;
@@ -70,11 +79,11 @@ function isConsistent(mask, width, height, cells) {
   return true;
 }
 
-function forcedSets(width, height, cells) {
+function forcedSets(width, height, cells, totalMines = null) {
   const limit = 1 << (width * height);
   const consistent = [];
   for (let mask = 0; mask < limit; mask += 1) {
-    if (isConsistent(mask, width, height, cells)) consistent.push(mask);
+    if (isConsistent(mask, width, height, cells, totalMines)) consistent.push(mask);
   }
 
   const forcedMines = new Set();
@@ -93,17 +102,25 @@ function signature(cells) {
   return cells.map((cell) => `${cell.state}:${cell.number ?? ""}`).join("|");
 }
 
-function assertSound(width, height, cells) {
-  const result = core.solveBoard({ width, height, cells });
-  const { forcedMines, forcedSafe, consistentCount } = forcedSets(width, height, cells);
+function assertSound(width, height, cells, totalMines = null) {
+  const result = core.solveBoard({ width, height, cells, ...(Number.isInteger(totalMines) ? { totalMines } : {}) });
+  const { forcedMines, forcedSafe, consistentCount } = forcedSets(width, height, cells, totalMines);
   assert.notEqual(consistentCount, 0);
 
   for (const mineKey of result.mineKeys) {
-    assert.equal(forcedMines.has(mineKey), true, `false mine ${mineKey} on ${signature(cells)}`);
+    assert.equal(
+      forcedMines.has(mineKey),
+      true,
+      `false mine ${mineKey} on ${signature(cells)} total=${totalMines ?? "unknown"}`
+    );
   }
 
   for (const safeKey of result.safeKeys) {
-    assert.equal(forcedSafe.has(safeKey), true, `false safe ${safeKey} on ${signature(cells)}`);
+    assert.equal(
+      forcedSafe.has(safeKey),
+      true,
+      `false safe ${safeKey} on ${signature(cells)} total=${totalMines ?? "unknown"}`
+    );
   }
 }
 
@@ -112,9 +129,12 @@ function checkNoFlagBoards3x3() {
   const height = 3;
   const limit = 1 << (width * height);
   const seen = new Set();
+  const seenGlobal = new Set();
   let checked = 0;
+  let checkedGlobal = 0;
 
   for (let actualMineMask = 0; actualMineMask < limit; actualMineMask += 1) {
+    const totalMines = bitCount(actualMineMask);
     const safeMask = (limit - 1) & ~actualMineMask;
     for (let openMask = safeMask; ; openMask = (openMask - 1) & safeMask) {
       const cells = makeCells(width, height, actualMineMask, openMask, 0);
@@ -124,11 +144,17 @@ function checkNoFlagBoards3x3() {
         assertSound(width, height, cells);
         checked += 1;
       }
+      const globalId = `${id}|m=${totalMines}`;
+      if (!seenGlobal.has(globalId)) {
+        seenGlobal.add(globalId);
+        assertSound(width, height, cells, totalMines);
+        checkedGlobal += 1;
+      }
       if (openMask === 0) break;
     }
   }
 
-  return checked;
+  return { checked, checkedGlobal };
 }
 
 function checkFlagBoards2x3() {
@@ -136,9 +162,12 @@ function checkFlagBoards2x3() {
   const height = 2;
   const limit = 1 << (width * height);
   const seen = new Set();
+  const seenGlobal = new Set();
   let checked = 0;
+  let checkedGlobal = 0;
 
   for (let actualMineMask = 0; actualMineMask < limit; actualMineMask += 1) {
+    const totalMines = bitCount(actualMineMask);
     const safeMask = (limit - 1) & ~actualMineMask;
     for (let openMask = safeMask; ; openMask = (openMask - 1) & safeMask) {
       const hiddenMask = (limit - 1) & ~openMask;
@@ -150,16 +179,25 @@ function checkFlagBoards2x3() {
           assertSound(width, height, cells);
           checked += 1;
         }
+        const globalId = `${id}|m=${totalMines}`;
+        if (!seenGlobal.has(globalId)) {
+          seenGlobal.add(globalId);
+          assertSound(width, height, cells, totalMines);
+          checkedGlobal += 1;
+        }
         if (flagMask === 0) break;
       }
       if (openMask === 0) break;
     }
   }
 
-  return checked;
+  return { checked, checkedGlobal };
 }
 
-const noFlagCount = checkNoFlagBoards3x3();
-const flagCount = checkFlagBoards2x3();
+const noFlag = checkNoFlagBoards3x3();
+const flag = checkFlagBoards2x3();
 
-console.log(`soundness tests passed (${noFlagCount + flagCount} views)`);
+console.log(
+  `soundness tests passed (${noFlag.checked + flag.checked} views, ` +
+    `${noFlag.checkedGlobal + flag.checkedGlobal} global views)`
+);
