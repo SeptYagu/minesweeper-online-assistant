@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.3.1
+// @version      0.3.2
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.3.1";
+  const ASSISTANT_VERSION = "0.3.2";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_STATE_KEY = "__MSAH_RESCUE_STATE";
@@ -182,7 +182,7 @@
     return `${reason}（已识别 ${mineCount}/${mines} 雷）`;
   }
 
-  function updateRescueSourceAvailability(source, reason = "雷图尚未明文可用") {
+  function updateRescueSourceAvailability(source, reason = "网站未下发完整雷图") {
     if (!source || !source.trusted) return source;
     const mineCount = countRescueMines(source.types);
     const complete = source.types.every(isCompleteRescueType);
@@ -192,44 +192,8 @@
     return source;
   }
 
-  function refreshRescueSourceFromRuntime(globalObj, source) {
-    const game = globalObj && globalObj.h;
-    const board = game && game.c214;
-    if (!source || !game || !board) return false;
-    const gameId = normalizeRescueGameId(game.$);
-    const width = Number(game.s111);
-    const height = Number(game.s112);
-    const mines = Number(game.m73);
-    if (
-      gameId !== source.gameId ||
-      width !== source.width ||
-      height !== source.height ||
-      mines !== source.mines
-    ) {
-      return false;
-    }
-    const length = width * height;
-    const types = readRescueTypeArray(board.t, length);
-    if (!types) return false;
-    const runtimeMineCount = countRescueMines(types);
-    const sourceMineCount = countRescueMines(source.types);
-    const runtimeComplete = types.every(isCompleteRescueType);
-    const sourceComplete = source.types.every(isCompleteRescueType);
-    if (runtimeMineCount < sourceMineCount) return false;
-    if (runtimeMineCount === sourceMineCount && (!runtimeComplete || sourceComplete)) return false;
-    const opened = readIndexedNumericArray(board.o, length);
-    const flags = readIndexedNumericArray(board.f, length);
-    source.types = types;
-    if (opened) source.opened = opened;
-    if (flags) source.flags = flags;
-    source.hasOpened = source.opened.some(Boolean);
-    source.unavailableReason = "运行时雷图尚未明文可用";
-    return true;
-  }
-
   function refreshRescueSource(globalObj, source) {
     if (!source || !source.trusted || source.available) return source;
-    refreshRescueSourceFromRuntime(globalObj, source);
     if (source.lpe) {
       const decodedTypes = decodeRescueLpeTypes(
         globalObj,
@@ -245,7 +209,7 @@
         source.types = decodedTypes;
       }
     }
-    return updateRescueSourceAvailability(source, source.unavailableReason || "雷图尚未明文可用");
+    return updateRescueSourceAvailability(source, source.unavailableReason || "网站未下发完整雷图");
   }
 
   function rescueSiteKeySeed(e, i, a, r, l, p) {
@@ -394,7 +358,7 @@
       trusted: true,
       available: false,
       reason: "",
-      unavailableReason: meta.lpe ? "加密雷图未解码" : "雷图尚未明文可用",
+      unavailableReason: meta.lpe ? "加密雷图未解码" : "网站未下发完整雷图",
       lpe:
         meta.lpe && typeof args[5] === "string"
           ? {
@@ -445,7 +409,7 @@
     }
     if (changed) {
       source.hasOpened = source.opened.some(Boolean);
-      updateRescueSourceAvailability(source, source.unavailableReason || "雷图尚未明文可用");
+      updateRescueSourceAvailability(source, source.unavailableReason || "网站未下发完整雷图");
     }
     return changed;
   }
@@ -2538,7 +2502,7 @@
         <div class="msah-buttons">
           <button type="button" data-msah-action="analyze" title="重新分析当前棋盘">分析</button>
           <button type="button" data-msah-action="clear" title="移除所有高亮">清除</button>
-          <button type="button" data-msah-action="rescue" title="仅在无确定结论时检查一个临时旗标记">救援 3/3</button>
+          <button type="button" data-msah-action="rescue" title="检查一个目标格本身无确定结论的临时旗标记">救援 3/3</button>
         </div>
         <div class="msah-options">
           <label title="棋盘变化后自动重新分析"><input type="checkbox" data-msah-option="auto"> 自动</label>
@@ -2549,7 +2513,7 @@
           <div class="msah-explain-title">推理说明</div>
           <div class="msah-explain-text" data-msah-explain-text>把鼠标移到 OK 或 M 上查看推理。</div>
         </div>
-        <div class="msah-note" data-msah-note>用法：OK 可开，M 可插旗；救援需脚本从开局前运行，先临时插旗一个死猜格再点救援，每局最多 3 格。本脚本不发送鼠标事件，也不会操作网页棋盘状态。</div>
+        <div class="msah-note" data-msah-note>用法：OK 可开，M 可插旗；救援需脚本从开局前运行且本局有可验证答案源，先临时插旗一个死猜格再点救援，每局最多 3 格。本脚本不发送鼠标事件，也不会操作网页棋盘状态。</div>
       </div>
     `;
     doc.body.appendChild(panel);
@@ -3292,7 +3256,6 @@
       relativeCellName,
       renderHighlights,
       renderExplanationHighlights,
-      refreshRescueSourceFromRuntime,
       refreshRescueSource,
       saveSettings,
       recordRescueUse,

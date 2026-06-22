@@ -397,8 +397,9 @@ function makeFakeDoc() {
     c214: { t: [0, 10, 1, 0], o: [0, 0, 1, 0], f: [0, 0, 0, 0] },
   };
   const status = core._private.getRescueSourceStatus(fakeWindow, { width: 2, height: 2 });
-  assert.equal(status.ok, true);
-  assert.deepEqual(JSON.parse(JSON.stringify(source.types)), [0, 10, 1, 0]);
+  assert.equal(status.ok, false);
+  assert.match(status.reason, /网站未下发完整雷图/);
+  assert.deepEqual(JSON.parse(JSON.stringify(source.types)), [0, 0, 0, 0]);
 }
 
 {
@@ -507,6 +508,7 @@ function makeFakeDoc() {
   assert.equal(html.includes("问号标记"), false, "rescue copy should not rely on unavailable site question marks");
   assert.equal(html.includes("临时旗标记"), true, "rescue should target a temporary flag mark");
   assert.equal(html.includes("救援需脚本从开局前运行"), true, "panel should explain rescue startup requirement");
+  assert.equal(html.includes("可验证答案源"), true, "panel should explain rescue source requirement");
   assert.equal(html.includes("每局最多 3 格"), true, "panel should explain rescue target limit");
   assert.equal(html.includes("aria-label"), false, "panel should not reference data-* label attributes");
 }
