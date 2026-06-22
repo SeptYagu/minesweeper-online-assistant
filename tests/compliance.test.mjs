@@ -486,6 +486,8 @@ function makeFakeDoc() {
   assert.equal(html.includes("当前悬停格"), false, "rescue should no longer depend on hover targeting");
   assert.equal(html.includes("问号标记"), false, "rescue copy should not rely on unavailable site question marks");
   assert.equal(html.includes("临时旗标记"), true, "rescue should target a temporary flag mark");
+  assert.equal(html.includes("救援需脚本从开局前运行"), true, "panel should explain rescue startup requirement");
+  assert.equal(html.includes("每局最多 3 格"), true, "panel should explain rescue target limit");
   assert.equal(html.includes("aria-label"), false, "panel should not reference data-* label attributes");
 }
 

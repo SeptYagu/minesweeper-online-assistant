@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.2.36
+// @version      0.3.0
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.2.36";
+  const ASSISTANT_VERSION = "0.3.0";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_STATE_KEY = "__MSAH_RESCUE_STATE";
@@ -2430,6 +2430,7 @@
         background: #f8fafc;
         color: #475569;
         font-size: 12px;
+        line-height: 1.45;
       }
       @media (max-width: 640px) {
         #msah-panel-${salt} {
@@ -2512,7 +2513,7 @@
           <div class="msah-explain-title">推理说明</div>
           <div class="msah-explain-text" data-msah-explain-text>把鼠标移到 OK 或 M 上查看推理。</div>
         </div>
-        <div class="msah-note" data-msah-note>提示：按 ~ 显示/隐藏分析。本脚本不发送任何鼠标事件，也不会操作网页棋盘状态。</div>
+        <div class="msah-note" data-msah-note>用法：OK 可开，M 可插旗；救援需脚本从开局前运行，先临时插旗一个死猜格再点救援，每局最多 3 格。本脚本不发送鼠标事件，也不会操作网页棋盘状态。</div>
       </div>
     `;
     doc.body.appendChild(panel);
