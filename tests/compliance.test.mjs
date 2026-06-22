@@ -556,9 +556,8 @@ function makeFakeDoc() {
     { t: [1, 10, 1, 0], o: [1, 0, 1, 0], f: [0, 0, 0, 0] },
   ]);
   lossSource.revealedByLoss = true;
-  core._private.markPendingRescueContinuation(fakeWindow);
   const continuedSource = core._private.captureRescueGameInit(state, [
-    { id: 91, sizeX: 2, sizeY: 2, mines: 1 },
+    { id: 91, originalId: 90, sizeX: 2, sizeY: 2, mines: 1, level: 101 },
     { t: [0, 0, 0, 0], o: [0, 0, 0, 0], f: [0, 0, 0, 0] },
   ]);
   assert.equal(continuedSource.available, false);
@@ -593,6 +592,78 @@ function makeFakeDoc() {
   const incompatibleStatus = core._private.getRescueSourceStatus(fakeWindow, incompatibleContinuedBoard);
   assert.equal(incompatibleStatus.ok, false, "continued source should not be used if opened numbers contradict it");
   assert.equal(incompatibleStatus.source.gameId, "91");
+}
+
+{
+  const store = makeFakeStore();
+  const fakeWindow = {
+    localStorage: store,
+    location: { pathname: "/game/93" },
+    document: {
+      querySelector(selector) {
+        if (selector === "#back_btn[href*='/game/']") return { href: "https://minesweeper.online/game/92" };
+        return null;
+      },
+    },
+  };
+  const state = core._private.getRescueState(fakeWindow);
+  const lossSource = core._private.captureRescueGameInit(state, [
+    { id: 92, sizeX: 2, sizeY: 2, mines: 1 },
+    { t: [1, 10, 1, 0], o: [1, 0, 1, 0], f: [0, 0, 0, 0] },
+  ]);
+  lossSource.revealedByLoss = true;
+  core._private.saveRescueSourceCache(fakeWindow, lossSource);
+  core._private.captureRescueGameInit(state, [
+    { id: 93, sizeX: 2, sizeY: 2, mines: 1 },
+    { t: [0, 0, 0, 0], o: [0, 0, 0, 0], f: [0, 0, 0, 0] },
+  ]);
+  const status = core._private.getRescueSourceStatus(fakeWindow, {
+    width: 2,
+    height: 2,
+    totalMines: 1,
+    cells: [
+      { x: 0, y: 0, state: "closed", number: null },
+      { x: 0, y: 1, state: "closed", number: null },
+      { x: 1, y: 0, state: "closed", number: null },
+      { x: 1, y: 1, state: "closed", number: null },
+    ],
+  });
+  assert.equal(status.ok, true, "continued page back button should recover the original loss source");
+  assert.equal(status.source.gameId, "92");
+}
+
+{
+  const store = makeFakeStore();
+  const fakeWindow = {
+    localStorage: store,
+    location: { pathname: "/game/95" },
+  };
+  const state = core._private.getRescueState(fakeWindow);
+  const lossSource = core._private.captureRescueGameInit(state, [
+    { id: 94, sizeX: 2, sizeY: 2, mines: 1 },
+    { t: [1, 10, 1, 0], o: [1, 0, 1, 0], f: [0, 0, 0, 0] },
+  ]);
+  lossSource.revealedByLoss = true;
+  core._private.markPendingRescueContinuation(fakeWindow);
+  const manualNewSource = core._private.captureRescueGameInit(state, [
+    { id: 95, originalId: null, sizeX: 2, sizeY: 2, mines: 1, level: 2 },
+    { t: [0, 0, 0, 0], o: [0, 0, 0, 0], f: [0, 0, 0, 0] },
+  ]);
+  assert.equal(manualNewSource.available, false);
+  assert.equal(core._private.loadRescueContinuation(fakeWindow, "95"), null);
+  const status = core._private.getRescueSourceStatus(fakeWindow, {
+    width: 2,
+    height: 2,
+    totalMines: 1,
+    cells: [
+      { x: 0, y: 0, state: "closed", number: null },
+      { x: 0, y: 1, state: "closed", number: null },
+      { x: 1, y: 0, state: "closed", number: null },
+      { x: 1, y: 1, state: "closed", number: null },
+    ],
+  });
+  assert.equal(status.ok, false, "manual difficulty/new-game init must not inherit a stale continued source");
+  assert.equal(status.source.gameId, "95");
 }
 
 {

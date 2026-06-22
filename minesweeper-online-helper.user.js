@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.3.8
+// @version      0.3.9
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.3.8";
+  const ASSISTANT_VERSION = "0.3.9";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_SOURCE_STORAGE_PREFIX = "msah-rescue-source-v1:";
@@ -100,6 +100,14 @@
         ? globalObj.location.pathname
         : "";
     const match = path.match(/\/game\/(\d+)/);
+    return match ? match[1] : null;
+  }
+
+  function getBackButtonGameId(globalObj) {
+    const doc = globalObj && globalObj.document;
+    const element = doc && typeof doc.querySelector === "function" ? doc.querySelector("#back_btn[href*='/game/']") : null;
+    const href = element && typeof element.href === "string" ? element.href : "";
+    const match = href.match(/\/game\/(\d+)/);
     return match ? match[1] : null;
   }
 
@@ -431,6 +439,45 @@
     return loadPendingRescueContinuation(globalObj);
   }
 
+  function getMetaOriginalGameId(meta) {
+    return normalizeRescueGameId(meta && meta.originalId);
+  }
+
+  function shouldUsePendingRescueContinuation(meta, targetSource) {
+    const level = Number(meta && meta.level);
+    return !!(targetSource && targetSource.gameId && level === 101);
+  }
+
+  function getExplicitRescueContinuation(state, targetSource, meta) {
+    const targetGameId = normalizeRescueGameId(targetSource && targetSource.gameId);
+    const originalGameId = getMetaOriginalGameId(meta);
+    if (originalGameId && originalGameId !== targetGameId) {
+      return {
+        sourceGameId: originalGameId,
+        width: targetSource.width,
+        height: targetSource.height,
+        mines: targetSource.mines,
+      };
+    }
+    const backGameId = getBackButtonGameId(state && state.globalObj);
+    if (backGameId && backGameId !== targetGameId) {
+      return {
+        sourceGameId: backGameId,
+        width: targetSource.width,
+        height: targetSource.height,
+        mines: targetSource.mines,
+      };
+    }
+    return null;
+  }
+
+  function getRescueContinuationForSource(state, targetSource, meta) {
+    const explicit = getExplicitRescueContinuation(state, targetSource, meta);
+    if (explicit) return explicit;
+    if (shouldUsePendingRescueContinuation(meta, targetSource)) return getPendingRescueContinuation(state);
+    return null;
+  }
+
   function getRescueSourceByGameId(globalObj, state, gameId, board) {
     const normalized = normalizeRescueGameId(gameId);
     if (!normalized || !state) return null;
@@ -443,18 +490,18 @@
     return null;
   }
 
-  function applyPendingRescueContinuation(state, targetSource) {
+  function applyPendingRescueContinuation(state, targetSource, meta = null) {
     if (!state || !targetSource || !targetSource.gameId) return false;
-    const pending = getPendingRescueContinuation(state);
-    const sourceGameId = normalizeRescueGameId(pending && pending.sourceGameId);
+    const continuation = getRescueContinuationForSource(state, targetSource, meta);
+    const sourceGameId = normalizeRescueGameId(continuation && continuation.sourceGameId);
     if (!sourceGameId || sourceGameId === targetSource.gameId) return false;
     if (
-      Number.isInteger(Number(pending.width)) &&
-      Number.isInteger(Number(pending.height)) &&
-      Number.isInteger(Number(pending.mines)) &&
-      (Number(pending.width) !== targetSource.width ||
-        Number(pending.height) !== targetSource.height ||
-        Number(pending.mines) !== targetSource.mines)
+      Number.isInteger(Number(continuation.width)) &&
+      Number.isInteger(Number(continuation.height)) &&
+      Number.isInteger(Number(continuation.mines)) &&
+      (Number(continuation.width) !== targetSource.width ||
+        Number(continuation.height) !== targetSource.height ||
+        Number(continuation.mines) !== targetSource.mines)
     ) {
       state.pendingContinueSourceId = null;
       clearPendingRescueContinuation(state.globalObj);
@@ -467,6 +514,14 @@
     saveRescueContinuation(state.globalObj, targetSource.gameId, source.gameId);
     clearPendingRescueContinuation(state.globalObj);
     return true;
+  }
+
+  function clearStalePendingContinuationForNewGame(state, targetSource, meta = null) {
+    if (!state || !targetSource) return false;
+    if (getExplicitRescueContinuation(state, targetSource, meta)) return false;
+    if (shouldUsePendingRescueContinuation(meta, targetSource)) return false;
+    state.pendingContinueSourceId = null;
+    return clearPendingRescueContinuation(state.globalObj);
   }
 
   function isCompleteRescueType(value) {
@@ -671,7 +726,7 @@
       existing.mines === mines
     ) {
       state.currentGameId = gameId;
-      applyPendingRescueContinuation(state, existing);
+      applyPendingRescueContinuation(state, existing, meta);
       return existing;
     }
     const source = {
@@ -693,7 +748,7 @@
     };
     state.boards[gameId] = source;
     state.currentGameId = gameId;
-    applyPendingRescueContinuation(state, source);
+    if (!applyPendingRescueContinuation(state, source, meta)) clearStalePendingContinuationForNewGame(state, source, meta);
     return source;
   }
 
@@ -759,12 +814,12 @@
     const existing = state.boards[gameId];
     if (shouldPreserveAvailableRescueSource(existing, source)) {
       state.currentGameId = gameId;
-      applyPendingRescueContinuation(state, existing);
+      applyPendingRescueContinuation(state, existing, meta);
       return preserveAvailableRescueSource(existing, source);
     }
     state.boards[gameId] = source;
     state.currentGameId = gameId;
-    applyPendingRescueContinuation(state, source);
+    if (!applyPendingRescueContinuation(state, source, meta)) clearStalePendingContinuationForNewGame(state, source, meta);
     return source;
   }
 
@@ -1151,9 +1206,11 @@
     const state = getRescueState(globalObj);
     if (!state || !state.boards || !board) return null;
     const preferred = getCurrentPageGameId(globalObj) || state.currentGameId;
+    const backGameId = getBackButtonGameId(globalObj);
     const continuedSourceId =
       (preferred && state.continuations && state.continuations[preferred]) ||
       (preferred && loadRescueContinuation(globalObj, preferred)) ||
+      (backGameId && backGameId !== preferred ? backGameId : null) ||
       null;
     const candidates = [];
     if (preferred && state.boards[preferred] && state.boards[preferred].available) {
