@@ -384,6 +384,26 @@ function makeFakeDoc() {
 {
   const fakeWindow = {};
   const state = core._private.getRescueState(fakeWindow);
+  const source = core._private.captureRescueGameInit(state, [
+    { id: 81, sizeX: 2, sizeY: 2, mines: 1 },
+    { t: [0, 0, 0, 0], o: [0, 0, 0, 0], f: [0, 0, 0, 0] },
+  ]);
+  assert.equal(source.available, false);
+  fakeWindow.h = {
+    $: 81,
+    s111: 2,
+    s112: 2,
+    m73: 1,
+    c214: { t: [0, 10, 1, 0], o: [0, 0, 1, 0], f: [0, 0, 0, 0] },
+  };
+  const status = core._private.getRescueSourceStatus(fakeWindow, { width: 2, height: 2 });
+  assert.equal(status.ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(source.types)), [0, 10, 1, 0]);
+}
+
+{
+  const fakeWindow = {};
+  const state = core._private.getRescueState(fakeWindow);
   const meta = { id: 78, sizeX: 2, sizeY: 2, mines: 1, level: 1, server: "", lpe: "missing" };
   const types = [0, 10, 1, 0];
   const prefixLength = Math.trunc(((Number(meta.id) % 1000) / 300) * types.length);

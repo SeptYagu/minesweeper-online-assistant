@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.3.0
+// @version      0.3.1
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.3.0";
+  const ASSISTANT_VERSION = "0.3.1";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_STATE_KEY = "__MSAH_RESCUE_STATE";
@@ -192,8 +192,44 @@
     return source;
   }
 
+  function refreshRescueSourceFromRuntime(globalObj, source) {
+    const game = globalObj && globalObj.h;
+    const board = game && game.c214;
+    if (!source || !game || !board) return false;
+    const gameId = normalizeRescueGameId(game.$);
+    const width = Number(game.s111);
+    const height = Number(game.s112);
+    const mines = Number(game.m73);
+    if (
+      gameId !== source.gameId ||
+      width !== source.width ||
+      height !== source.height ||
+      mines !== source.mines
+    ) {
+      return false;
+    }
+    const length = width * height;
+    const types = readRescueTypeArray(board.t, length);
+    if (!types) return false;
+    const runtimeMineCount = countRescueMines(types);
+    const sourceMineCount = countRescueMines(source.types);
+    const runtimeComplete = types.every(isCompleteRescueType);
+    const sourceComplete = source.types.every(isCompleteRescueType);
+    if (runtimeMineCount < sourceMineCount) return false;
+    if (runtimeMineCount === sourceMineCount && (!runtimeComplete || sourceComplete)) return false;
+    const opened = readIndexedNumericArray(board.o, length);
+    const flags = readIndexedNumericArray(board.f, length);
+    source.types = types;
+    if (opened) source.opened = opened;
+    if (flags) source.flags = flags;
+    source.hasOpened = source.opened.some(Boolean);
+    source.unavailableReason = "运行时雷图尚未明文可用";
+    return true;
+  }
+
   function refreshRescueSource(globalObj, source) {
     if (!source || !source.trusted || source.available) return source;
+    refreshRescueSourceFromRuntime(globalObj, source);
     if (source.lpe) {
       const decodedTypes = decodeRescueLpeTypes(
         globalObj,
@@ -3256,6 +3292,7 @@
       relativeCellName,
       renderHighlights,
       renderExplanationHighlights,
+      refreshRescueSourceFromRuntime,
       refreshRescueSource,
       saveSettings,
       recordRescueUse,
