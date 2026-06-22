@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.3.6
+// @version      0.3.7
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.3.6";
+  const ASSISTANT_VERSION = "0.3.7";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_SOURCE_STORAGE_PREFIX = "msah-rescue-source-v1:";
@@ -436,6 +436,18 @@
     const gameId = normalizeRescueGameId(meta && meta.id);
     if (!state || !gameId) return null;
     const length = width * height;
+    const existing = state.boards && state.boards[gameId];
+    if (
+      existing &&
+      existing.available &&
+      existing.revealedByLoss &&
+      existing.width === width &&
+      existing.height === height &&
+      existing.mines === mines
+    ) {
+      state.currentGameId = gameId;
+      return existing;
+    }
     const source = {
       gameId,
       width,
@@ -535,33 +547,36 @@
     for (let i = 0; i + 4 < touchCells.length; i += 5) {
       const x = Number(touchCells[i]);
       const y = Number(touchCells[i + 1]);
-      let type = Number(touchCells[i + 2]);
+      const rawType = Number(touchCells[i + 2]);
+      let type = rawType;
       let opened = Number(touchCells[i + 3]);
       const flagged = Number(touchCells[i + 4]);
       if (!Number.isInteger(x) || !Number.isInteger(y)) continue;
       if (x < 0 || y < 0 || x >= source.width || y >= source.height) continue;
-      if (type === RESCUE_BOOM_VALUE) {
+      const index = x * source.height + y;
+      const previousFlagged = !!source.flags[index];
+      const baseType = Number.isFinite(rawType) ? normalizeRescueTypeValue(rawType) : rawType;
+      const closedTypeUpdate = baseType === RESCUE_CLOSED_VALUE;
+      if (baseType === RESCUE_BOOM_VALUE) {
         type = RESCUE_MINE_VALUE;
         opened = 1;
         sawBoom = true;
-      }
-      if (type === RESCUE_OPENED_VALUE) {
+      } else if (baseType === RESCUE_OPENED_VALUE) {
         type = opened;
         opened = 1;
-      } else if (type === RESCUE_CLOSED_VALUE) {
-        type = 0;
+      } else if (closedTypeUpdate) {
+        type = source.revealedByLoss && source.available ? source.types[index] : 0;
+      } else {
+        type = baseType;
       }
-      const index = x * source.height + y;
-      const previousFlagged = !!source.flags[index];
       const normalizedType = Number.isFinite(type) ? normalizeRescueTypeValue(type) : source.types[index];
       if (normalizedType === RESCUE_MINE_VALUE) sawMine = true;
-      const keepLossRevealedMine =
+      const keepLossRevealedType =
         source.revealedByLoss &&
         source.available &&
         !options.loss &&
-        source.types[index] === RESCUE_MINE_VALUE &&
-        normalizedType !== RESCUE_MINE_VALUE;
-      if (!keepLossRevealedMine) source.types[index] = normalizedType;
+        (closedTypeUpdate || !isCompleteRescueType(normalizedType));
+      if (!keepLossRevealedType) source.types[index] = normalizedType;
       source.opened[index] = Number.isFinite(opened) ? opened : source.opened[index];
       source.flags[index] = Number.isFinite(flagged) ? flagged : source.flags[index];
       if (!previousFlagged && source.flags[index]) {
@@ -2409,7 +2424,7 @@
       }
       .msah-${salt}-rescue-mine {
         position: relative !important;
-        box-shadow: inset 0 0 0 4px rgba(124, 58, 237, 0.98), 0 0 10px rgba(124, 58, 237, 0.58) !important;
+        box-shadow: inset 0 0 0 3px rgba(124, 58, 237, 0.68), 0 0 8px rgba(124, 58, 237, 0.32) !important;
       }
       .msah-${salt}-explain-focus,
       .msah-${salt}-explain-layer-1,
@@ -2510,7 +2525,14 @@
       .msah-${salt}-mine::after { background: rgba(220, 38, 38, 0.92); }
       .msah-${salt}-prob::after { background: rgba(37, 99, 235, 0.88); }
       .msah-${salt}-rescue-safe::after { background: rgba(15, 118, 110, 0.94); }
-      .msah-${salt}-rescue-mine::after { background: rgba(109, 40, 217, 0.94); }
+      .msah-${salt}-rescue-mine::after {
+        left: auto;
+        top: auto;
+        right: 1px;
+        bottom: 1px;
+        transform: none;
+        background: rgba(109, 40, 217, 0.58);
+      }
       .msah-${salt}-flag-q::after {
         background: rgba(234, 179, 8, 0.68);
         color: #422006;

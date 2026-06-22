@@ -468,6 +468,26 @@ function makeFakeDoc() {
 }
 
 {
+  const state = core._private.createRescueState();
+  const source = core._private.captureRescueGameInit(state, [
+    { id: 85, sizeX: 2, sizeY: 2, mines: 1 },
+    { t: [1, 10, 1, 0], o: [1, 0, 1, 0], f: [0, 0, 0, 0] },
+  ]);
+  source.revealedByLoss = true;
+  assert.equal(source.available, true);
+  core._private.applyRescueTouchCells(source, [0, 0, 29, 0, 1]);
+  assert.equal(source.available, true, "flagging after rescue should not corrupt a loss-revealed source");
+  assert.deepEqual(JSON.parse(JSON.stringify(source.types)), [1, 10, 1, 0]);
+
+  const preserved = core._private.captureRescueGameInit(state, [
+    { id: 85, sizeX: 2, sizeY: 2, mines: 1 },
+    { o: [1, 0, 1, 0], f: [1, 0, 0, 0] },
+  ]);
+  assert.equal(preserved.available, true, "unsupported same-game init should not replace a loss-revealed source");
+  assert.deepEqual(JSON.parse(JSON.stringify(preserved.types)), [1, 10, 1, 0]);
+}
+
+{
   const fakeWindow = {
     location: { pathname: "/game/84" },
   };
@@ -638,6 +658,8 @@ function makeFakeDoc() {
   assert.equal(html.includes("可验证答案源"), true, "panel should explain rescue source requirement");
   assert.equal(html.includes("每局最多 3 格"), true, "panel should explain rescue target limit");
   assert.equal(html.includes("aria-label"), false, "panel should not reference data-* label attributes");
+  assert.match(source, /msah-\$\{salt\}-rescue-mine::after[\s\S]*right: 1px/);
+  assert.match(source, /background: rgba\(109, 40, 217, 0\.58\)/);
 }
 
 {
