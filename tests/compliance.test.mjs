@@ -488,6 +488,22 @@ function makeFakeDoc() {
 }
 
 {
+  const state = core._private.createRescueState();
+  const source = core._private.captureRescueGameInit(state, [
+    { id: 86, sizeX: 2, sizeY: 1, mines: 1 },
+    { t: [10, 0], o: [0, 0], f: [0, 0] },
+  ]);
+  assert.equal(source.available, true);
+  assert.equal(source.revealedByLoss, false);
+  core._private.applyRescueTouchCells(source, [0, 0, 13, 0, 1]);
+  assert.equal(source.available, true, "flagging should not corrupt a complete non-loss rescue source");
+  assert.deepEqual(JSON.parse(JSON.stringify(source.types)), [10, 0]);
+  core._private.applyRescueTouchCells(source, [0, 0, 25, 0, 1]);
+  assert.equal(source.available, true, "flagged non-complete type updates should preserve complete source values");
+  assert.deepEqual(JSON.parse(JSON.stringify(source.types)), [10, 0]);
+}
+
+{
   const fakeWindow = {
     location: { pathname: "/game/84" },
   };
@@ -526,6 +542,57 @@ function makeFakeDoc() {
   const incompatibleStatus = core._private.getRescueSourceStatus(fakeWindow, incompatibleBoard);
   assert.equal(incompatibleStatus.ok, false, "incompatible old source should not be used");
   assert.equal(incompatibleStatus.source.gameId, "84");
+}
+
+{
+  const store = makeFakeStore();
+  const fakeWindow = {
+    localStorage: store,
+    location: { pathname: "/game/91" },
+  };
+  const state = core._private.getRescueState(fakeWindow);
+  const lossSource = core._private.captureRescueGameInit(state, [
+    { id: 90, sizeX: 2, sizeY: 2, mines: 1 },
+    { t: [1, 10, 1, 0], o: [1, 0, 1, 0], f: [0, 0, 0, 0] },
+  ]);
+  lossSource.revealedByLoss = true;
+  core._private.markPendingRescueContinuation(fakeWindow);
+  const continuedSource = core._private.captureRescueGameInit(state, [
+    { id: 91, sizeX: 2, sizeY: 2, mines: 1 },
+    { t: [0, 0, 0, 0], o: [0, 0, 0, 0], f: [0, 0, 0, 0] },
+  ]);
+  assert.equal(continuedSource.available, false);
+  assert.equal(core._private.loadRescueContinuation(fakeWindow, "91"), "90");
+  const blankContinuedBoard = core._private.normalizeBoard({
+    totalMines: 1,
+    cells: [
+      { x: 0, y: 0, state: "closed", number: null },
+      { x: 0, y: 1, state: "closed", number: null },
+      { x: 1, y: 0, state: "closed", number: null },
+      { x: 1, y: 1, state: "closed", number: null },
+    ],
+  });
+  const continuedStatus = core._private.getRescueSourceStatus(fakeWindow, blankContinuedBoard);
+  assert.equal(continuedStatus.ok, true, "continued game should reuse the loss-revealed source even before new opens");
+  assert.equal(continuedStatus.source.gameId, "90");
+
+  core._private.captureRescueTouchUpdate(state, [1, "91", { touchCells: [0, 1, 13, 0, 1] }, 0, false, null]);
+  const afterFlagStatus = core._private.getRescueSourceStatus(fakeWindow, blankContinuedBoard);
+  assert.equal(afterFlagStatus.ok, true, "continued source should survive temporary flag updates on the new game id");
+  assert.equal(afterFlagStatus.source.gameId, "90");
+
+  const incompatibleContinuedBoard = core._private.normalizeBoard({
+    totalMines: 1,
+    cells: [
+      { x: 0, y: 0, state: "open", number: 2 },
+      { x: 0, y: 1, state: "closed", number: null },
+      { x: 1, y: 0, state: "closed", number: null },
+      { x: 1, y: 1, state: "closed", number: null },
+    ],
+  });
+  const incompatibleStatus = core._private.getRescueSourceStatus(fakeWindow, incompatibleContinuedBoard);
+  assert.equal(incompatibleStatus.ok, false, "continued source should not be used if opened numbers contradict it");
+  assert.equal(incompatibleStatus.source.gameId, "91");
 }
 
 {
