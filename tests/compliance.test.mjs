@@ -268,6 +268,102 @@ function makeFakeDoc() {
 }
 
 {
+  const store = makeFakeStore();
+  assert.equal(core._private.getRescueStorageKey("deadbeef", "42"), "msah-deadbeef-rescue-42");
+  assert.deepEqual(JSON.parse(JSON.stringify(core._private.loadRescueUsage("deadbeef", "42", store))), {
+    used: 0,
+    keys: [],
+  });
+
+  let result = core._private.recordRescueUse("deadbeef", "42", "0,0", store);
+  assert.equal(result.ok, true);
+  assert.equal(result.counted, true);
+  assert.equal(core._private.getRescueRemaining(result.usage), 2);
+
+  result = core._private.recordRescueUse("deadbeef", "42", "0,0", store);
+  assert.equal(result.ok, true);
+  assert.equal(result.counted, false, "same target should not consume another rescue");
+
+  core._private.recordRescueUse("deadbeef", "42", "0,1", store);
+  core._private.recordRescueUse("deadbeef", "42", "0,2", store);
+  result = core._private.recordRescueUse("deadbeef", "42", "0,3", store);
+  assert.equal(result.ok, false, "a game should allow at most three rescue targets");
+  assert.equal(core._private.loadRescueUsage("deadbeef", "42", store).used, 3);
+}
+
+{
+  const state = core._private.createRescueState();
+  const source = core._private.captureRescueGameInit(state, [
+    { id: 77, sizeX: 2, sizeY: 2, mines: 1 },
+    { t: [0, 10, 1, 0], o: [0, 0, 1, 0], f: [0, 0, 0, 0] },
+    [],
+    [],
+    null,
+    null,
+    0,
+    0,
+    0,
+    0,
+  ]);
+  assert.equal(source.available, true);
+  assert.equal(state.currentGameId, "77");
+  assert.deepEqual(JSON.parse(JSON.stringify(core._private.getRescueAnswerFromSource(source, "0,1"))), {
+    key: "0,1",
+    isMine: true,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(core._private.getRescueAnswerFromSource(source, "1,0"))), {
+    key: "1,0",
+    isMine: false,
+  });
+
+  core._private.captureRescueTouchUpdate(state, [1, "77", { touchCells: [1, 1, 12, 3, 0] }, null, false, null]);
+  assert.equal(source.types[3], 3);
+  assert.equal(source.opened[3], 1);
+}
+
+{
+  const state = core._private.createRescueState();
+  const source = core._private.captureRescueGameInit(state, [
+    { id: 88, sizeX: 2, sizeY: 1, mines: 1 },
+    { t: [10, 0], o: [0, 0], f: [0, 0] },
+  ]);
+  assert.equal(source.available, true);
+  core._private.captureRescueClickRequest(state, [
+    "GameplayController.gameClickWsAction",
+    [1, "88", 0, 0, 0, 1, "", null, null],
+    0,
+    980,
+  ]);
+  assert.equal(source.available, false);
+  assert.equal(source.trusted, false);
+}
+
+{
+  const fakeWindow = {};
+  const state = core._private.installRescueSocketCapture(fakeWindow);
+  const socket = {
+    on(eventName, handler) {
+      this.eventName = eventName;
+      this.handler = handler;
+    },
+    emit() {},
+  };
+  fakeWindow.io = {
+    connect() {
+      return socket;
+    },
+  };
+  const connected = fakeWindow.io.connect("wss://example.invalid");
+  connected.on("response", () => {});
+  connected.handler([
+    0,
+    999,
+    [{ id: 99, sizeX: 1, sizeY: 1, mines: 1 }, { t: [10], o: [0], f: [0] }],
+  ]);
+  assert.equal(state.boards["99"].available, true);
+}
+
+{
   const doc = makeFakeDoc();
   const settings = { auto: true, showProbabilities: false, collapsed: false };
   const panel = core._private.createPanel(settings, "abc12345", doc);
@@ -302,6 +398,8 @@ function makeFakeDoc() {
   assert.equal(names.prob, "msah-deadbeef-prob");
   assert.equal(names.flagOk, "msah-deadbeef-flag-ok");
   assert.equal(names.flagQ, "msah-deadbeef-flag-q");
+  assert.equal(names.rescueSafe, "msah-deadbeef-rescue-safe");
+  assert.equal(names.rescueMine, "msah-deadbeef-rescue-mine");
   assert.deepEqual(JSON.parse(JSON.stringify(names.explainLayers)), [
     "msah-deadbeef-explain-layer-1",
     "msah-deadbeef-explain-layer-2",

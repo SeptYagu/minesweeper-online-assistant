@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.2.30
+// @version      0.2.31
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -10,14 +10,22 @@
 // @supportURL   https://github.com/SeptYagu/minesweeper-online-assistant/issues
 // @updateURL    https://raw.githubusercontent.com/SeptYagu/minesweeper-online-assistant/main/minesweeper-online-helper.user.js
 // @downloadURL  https://raw.githubusercontent.com/SeptYagu/minesweeper-online-assistant/main/minesweeper-online-helper.user.js
+// @run-at       document-start
 // ==/UserScript==
 
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.2.30";
+  const ASSISTANT_VERSION = "0.2.31";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
+  const RESCUE_STATE_KEY = "__MSAH_RESCUE_STATE";
+  const RESCUE_LIMIT = 3;
+  const RESCUE_MINE_VALUE = 10;
+  const RESCUE_BOOM_VALUE = 11;
+  const RESCUE_OPENED_VALUE = 12;
+  const RESCUE_CLOSED_VALUE = 13;
+  const GAME_LEFT_CLICK = 0;
   const SALT_LENGTH = 8;
   const DEFAULT_MAX_EXACT_CELLS = 18;
   const DEFAULT_MAX_EXACT_MODELS = 50000;
@@ -62,6 +70,277 @@
 
   function getStorageKey(salt) {
     return `msah-${salt}-cfg`;
+  }
+
+  function getRescueStorageKey(salt, gameKey) {
+    return `msah-${salt}-rescue-${gameKey}`;
+  }
+
+  function normalizeRescueGameId(value) {
+    if (value === null || value === undefined) return null;
+    const text = String(value);
+    return text ? text : null;
+  }
+
+  function getCurrentPageGameId(globalObj) {
+    const path =
+      globalObj &&
+      globalObj.location &&
+      typeof globalObj.location.pathname === "string"
+        ? globalObj.location.pathname
+        : "";
+    const match = path.match(/\/game\/(\d+)/);
+    return match ? match[1] : null;
+  }
+
+  function createRescueState() {
+    return {
+      boards: {},
+      currentGameId: null,
+      installed: false,
+    };
+  }
+
+  function getRescueState(globalObj) {
+    if (!globalObj) return null;
+    if (globalObj[RESCUE_STATE_KEY]) return globalObj[RESCUE_STATE_KEY];
+    const state = createRescueState();
+    try {
+      Object.defineProperty(globalObj, RESCUE_STATE_KEY, {
+        value: state,
+        configurable: true,
+      });
+    } catch (_error) {
+      globalObj[RESCUE_STATE_KEY] = state;
+    }
+    return state;
+  }
+
+  function readIndexedNumericArray(value, length) {
+    if (!value || !Number.isInteger(length) || length < 0) return null;
+    const out = [];
+    for (let i = 0; i < length; i += 1) {
+      const raw = value[i];
+      const number = Number(raw);
+      out.push(Number.isFinite(number) ? number : 0);
+    }
+    return out;
+  }
+
+  function isRescueGameMeta(value) {
+    return (
+      value &&
+      Number.isInteger(Number(value.sizeX)) &&
+      Number.isInteger(Number(value.sizeY)) &&
+      Number.isInteger(Number(value.mines)) &&
+      normalizeRescueGameId(value.id)
+    );
+  }
+
+  function isRescueBoardPayload(value, length) {
+    return (
+      value &&
+      value.t &&
+      value.o &&
+      value.f &&
+      value.t.length !== 0 &&
+      readIndexedNumericArray(value.t, length) !== null
+    );
+  }
+
+  function countRescueMines(types) {
+    return types.filter((value) => value === RESCUE_MINE_VALUE).length;
+  }
+
+  function captureRescueGameInit(state, args) {
+    if (!state || !Array.isArray(args) || !isRescueGameMeta(args[0])) return null;
+    const meta = args[0];
+    const width = Number(meta.sizeX);
+    const height = Number(meta.sizeY);
+    const mines = Number(meta.mines);
+    const length = width * height;
+    const payload = args[1];
+    if (!isRescueBoardPayload(payload, length)) return null;
+
+    const types = readIndexedNumericArray(payload.t, length);
+    const opened = readIndexedNumericArray(payload.o, length);
+    const flags = readIndexedNumericArray(payload.f, length);
+    if (!types || !opened || !flags) return null;
+
+    const mineCount = countRescueMines(types);
+    const gameId = normalizeRescueGameId(meta.id);
+    const source = {
+      gameId,
+      width,
+      height,
+      mines,
+      types,
+      opened,
+      flags,
+      hasOpened: opened.some(Boolean),
+      trusted: true,
+      available: mineCount === mines,
+      reason: mineCount === mines ? "" : "雷图尚未明文可用",
+      updatedAt: Date.now(),
+    };
+    state.boards[gameId] = source;
+    state.currentGameId = gameId;
+    return source;
+  }
+
+  function applyRescueTouchCells(source, touchCells) {
+    if (!source || !Array.isArray(touchCells)) return false;
+    let changed = false;
+    for (let i = 0; i + 4 < touchCells.length; i += 5) {
+      const x = Number(touchCells[i]);
+      const y = Number(touchCells[i + 1]);
+      let type = Number(touchCells[i + 2]);
+      let opened = Number(touchCells[i + 3]);
+      const flagged = Number(touchCells[i + 4]);
+      if (!Number.isInteger(x) || !Number.isInteger(y)) continue;
+      if (x < 0 || y < 0 || x >= source.width || y >= source.height) continue;
+      if (type === RESCUE_BOOM_VALUE) continue;
+      if (type === RESCUE_OPENED_VALUE) {
+        type = opened;
+        opened = 1;
+      } else if (type === RESCUE_CLOSED_VALUE) {
+        type = 0;
+      }
+      const index = x * source.height + y;
+      source.types[index] = Number.isFinite(type) ? type : source.types[index];
+      source.opened[index] = Number.isFinite(opened) ? opened : source.opened[index];
+      source.flags[index] = Number.isFinite(flagged) ? flagged : source.flags[index];
+      changed = true;
+    }
+    if (changed) {
+      source.hasOpened = source.opened.some(Boolean);
+      source.updatedAt = Date.now();
+    }
+    return changed;
+  }
+
+  function captureRescueTouchUpdate(state, args) {
+    if (!state || !Array.isArray(args)) return false;
+    const gameId = normalizeRescueGameId(args[1]);
+    const action = args[2];
+    const source = gameId ? state.boards[gameId] : null;
+    if (!source || !action || !Array.isArray(action.touchCells)) return false;
+    return applyRescueTouchCells(source, action.touchCells);
+  }
+
+  function captureRescueClickRequest(state, requestPayload) {
+    if (!state || !Array.isArray(requestPayload)) return false;
+    const actionName = requestPayload[0];
+    const args = requestPayload[1];
+    if (actionName !== "GameplayController.gameClickWsAction" || !Array.isArray(args)) return false;
+    const gameId = normalizeRescueGameId(args[1]);
+    const source = gameId ? state.boards[gameId] : null;
+    if (!source) return false;
+    const type = Number(args[2]);
+    const x = Number(args[3]);
+    const y = Number(args[4]);
+    if (type !== GAME_LEFT_CLICK || source.hasOpened) return false;
+    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= source.width || y >= source.height) {
+      return false;
+    }
+    if (source.types[x * source.height + y] === RESCUE_MINE_VALUE) {
+      source.trusted = false;
+      source.available = false;
+      source.reason = "首开触发过雷位重排";
+      source.updatedAt = Date.now();
+      return true;
+    }
+    return false;
+  }
+
+  function captureRescueSocketResponse(state, payload) {
+    if (!state || !Array.isArray(payload)) return;
+    const args = payload[2];
+    captureRescueGameInit(state, args);
+    captureRescueTouchUpdate(state, args);
+  }
+
+  function installRescueSocketCapture(globalObj) {
+    const state = getRescueState(globalObj);
+    if (!globalObj || !state || state.installed) return state;
+    state.installed = true;
+
+    function patchEmitter(emitter) {
+      if (!emitter || typeof emitter.emit !== "function" || emitter.__msahRescueEmitPatched) return;
+      const originalEmit = emitter.emit;
+      try {
+        Object.defineProperty(emitter, "__msahRescueEmitPatched", { value: true });
+      } catch (_error) {
+        emitter.__msahRescueEmitPatched = true;
+      }
+      emitter.emit = function patchedEmit(eventName, payload, ...rest) {
+        if (eventName === "request") captureRescueClickRequest(state, payload);
+        return originalEmit.call(this, eventName, payload, ...rest);
+      };
+    }
+
+    function patchSocket(socket) {
+      if (!socket || socket.__msahRescueSocketPatched) return socket;
+      try {
+        Object.defineProperty(socket, "__msahRescueSocketPatched", { value: true });
+      } catch (_error) {
+        socket.__msahRescueSocketPatched = true;
+      }
+      patchEmitter(socket);
+      if (socket.volatile) patchEmitter(socket.volatile);
+      if (typeof socket.on === "function") {
+        const originalOn = socket.on;
+        socket.on = function patchedOn(eventName, handler, ...rest) {
+          if (eventName === "response" && typeof handler === "function") {
+            const wrapped = function wrappedResponse(payload, ...args) {
+              captureRescueSocketResponse(state, payload);
+              return handler.call(this, payload, ...args);
+            };
+            return originalOn.call(this, eventName, wrapped, ...rest);
+          }
+          return originalOn.call(this, eventName, handler, ...rest);
+        };
+      }
+      return socket;
+    }
+
+    function patchIo(io) {
+      if (!io || io.__msahRescueIoPatched) return io;
+      try {
+        Object.defineProperty(io, "__msahRescueIoPatched", { value: true });
+      } catch (_error) {
+        io.__msahRescueIoPatched = true;
+      }
+      if (typeof io.connect === "function") {
+        const originalConnect = io.connect;
+        io.connect = function patchedConnect(...args) {
+          return patchSocket(originalConnect.apply(this, args));
+        };
+      }
+      return io;
+    }
+
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(globalObj, "io");
+      let current = descriptor && "value" in descriptor ? descriptor.value : globalObj.io;
+      if (current) current = patchIo(current);
+      if (!descriptor || descriptor.configurable) {
+        Object.defineProperty(globalObj, "io", {
+          configurable: true,
+          enumerable: descriptor ? descriptor.enumerable : true,
+          get() {
+            return current;
+          },
+          set(value) {
+            current = patchIo(value);
+          },
+        });
+      }
+    } catch (_error) {
+      if (globalObj.io) patchIo(globalObj.io);
+    }
+
+    return state;
   }
 
   function getInstallSalt(store, random = Math.random) {
@@ -123,6 +402,119 @@
       // ignore
     }
     return whitelist;
+  }
+
+  function loadRescueUsage(salt, gameKey, store) {
+    const defaults = { used: 0, keys: [] };
+    if (!store || !gameKey) return defaults;
+    try {
+      const raw = store.getItem(getRescueStorageKey(salt, gameKey));
+      if (!raw) return defaults;
+      const parsed = JSON.parse(raw);
+      const keys = Array.isArray(parsed.keys)
+        ? parsed.keys.filter((key) => typeof key === "string")
+        : [];
+      const used = Math.min(
+        RESCUE_LIMIT,
+        Math.max(Number(parsed.used) || 0, Math.min(RESCUE_LIMIT, keys.length))
+      );
+      return { used, keys: keys.slice(0, RESCUE_LIMIT) };
+    } catch (_error) {
+      return defaults;
+    }
+  }
+
+  function saveRescueUsage(salt, gameKey, usage, store) {
+    if (!store || !gameKey || !usage) return;
+    try {
+      store.setItem(
+        getRescueStorageKey(salt, gameKey),
+        JSON.stringify({
+          used: Math.min(RESCUE_LIMIT, Math.max(0, Number(usage.used) || 0)),
+          keys: Array.isArray(usage.keys) ? usage.keys.slice(0, RESCUE_LIMIT) : [],
+        })
+      );
+    } catch (_error) {
+      // ignore
+    }
+  }
+
+  function getRescueRemaining(usage) {
+    return Math.max(0, RESCUE_LIMIT - Math.min(RESCUE_LIMIT, usage && usage.used ? usage.used : 0));
+  }
+
+  function recordRescueUse(salt, gameKey, key, store) {
+    const usage = loadRescueUsage(salt, gameKey, store);
+    if (!key) return { ok: false, counted: false, usage };
+    if (usage.keys.includes(key)) return { ok: true, counted: false, usage };
+    if (usage.used >= RESCUE_LIMIT) return { ok: false, counted: false, usage };
+    usage.keys.push(key);
+    usage.used = Math.min(RESCUE_LIMIT, usage.used + 1);
+    saveRescueUsage(salt, gameKey, usage, store);
+    return { ok: true, counted: true, usage };
+  }
+
+  function hasActionableDeterministicMove(result, board = null) {
+    if (!result || !result.safeKeys || !result.mineKeys) return false;
+    if (!board || !Array.isArray(board.cells)) {
+      return result.safeKeys.size > 0 || result.mineKeys.size > 0;
+    }
+    return board.cells.some(
+      (cell) =>
+        cell &&
+        cell.state === "closed" &&
+        (result.safeKeys.has(cell.key) || result.mineKeys.has(cell.key))
+    );
+  }
+
+  function isDeadGuessCandidate(result, board = null) {
+    return !!result && !hasActionableDeterministicMove(result, board);
+  }
+
+  function findMatchingRescueSource(globalObj, board) {
+    const state = globalObj && globalObj[RESCUE_STATE_KEY];
+    if (!state || !state.boards || !board) return null;
+    const preferred = getCurrentPageGameId(globalObj) || state.currentGameId;
+    const candidates = [];
+    if (preferred && state.boards[preferred]) candidates.push(state.boards[preferred]);
+    for (const source of Object.values(state.boards)) {
+      if (!candidates.includes(source)) candidates.push(source);
+    }
+    return (
+      candidates.find(
+        (source) =>
+          source &&
+          source.width === board.width &&
+          source.height === board.height &&
+          source.trusted &&
+          source.available
+      ) || null
+    );
+  }
+
+  function getCurrentRescueGameKey(globalObj, board) {
+    const source = findMatchingRescueSource(globalObj, board);
+    return (
+      (source && source.gameId) ||
+      getCurrentPageGameId(globalObj) ||
+      (board ? `${board.width}x${board.height}:${board.totalMines ?? "unknown"}` : null)
+    );
+  }
+
+  function getRescueAnswerFromSource(source, key) {
+    if (!source || !source.trusted || !source.available || !key) return null;
+    const point = parseKey(key);
+    if (!Number.isInteger(point.x) || !Number.isInteger(point.y)) return null;
+    if (point.x < 0 || point.y < 0 || point.x >= source.width || point.y >= source.height) return null;
+    const value = source.types[point.x * source.height + point.y];
+    if (value === RESCUE_MINE_VALUE) return { key, isMine: true };
+    if (Number.isInteger(value) && value >= 0 && value <= 8) return { key, isMine: false };
+    return null;
+  }
+
+  function getClosedBoardCell(board, key) {
+    const cell = board && board.byKey ? board.byKey.get(key) : null;
+    return cell && cell.state === "closed" ? cell : null;
   }
 
   function isRealFlagClass(className) {
@@ -1543,6 +1935,14 @@
         position: relative !important;
         box-shadow: inset 0 0 0 3px rgba(234, 179, 8, 0.72), 0 0 8px rgba(234, 179, 8, 0.32) !important;
       }
+      .msah-${salt}-rescue-safe {
+        position: relative !important;
+        box-shadow: inset 0 0 0 4px rgba(20, 184, 166, 0.98), 0 0 10px rgba(20, 184, 166, 0.6) !important;
+      }
+      .msah-${salt}-rescue-mine {
+        position: relative !important;
+        box-shadow: inset 0 0 0 4px rgba(124, 58, 237, 0.98), 0 0 10px rgba(124, 58, 237, 0.58) !important;
+      }
       .msah-${salt}-explain-focus,
       .msah-${salt}-explain-layer-1,
       .msah-${salt}-explain-layer-2,
@@ -1621,7 +2021,9 @@
       .msah-${salt}-safe::after,
       .msah-${salt}-mine::after,
       .msah-${salt}-prob::after,
-      .msah-${salt}-flag-q::after {
+      .msah-${salt}-flag-q::after,
+      .msah-${salt}-rescue-safe::after,
+      .msah-${salt}-rescue-mine::after {
         content: attr(aria-label);
         position: absolute;
         left: 50%;
@@ -1639,6 +2041,8 @@
       .msah-${salt}-safe::after { background: rgba(18, 164, 74, 0.92); }
       .msah-${salt}-mine::after { background: rgba(220, 38, 38, 0.92); }
       .msah-${salt}-prob::after { background: rgba(37, 99, 235, 0.88); }
+      .msah-${salt}-rescue-safe::after { background: rgba(15, 118, 110, 0.94); }
+      .msah-${salt}-rescue-mine::after { background: rgba(109, 40, 217, 0.94); }
       .msah-${salt}-flag-q::after {
         background: rgba(234, 179, 8, 0.68);
         color: #422006;
@@ -1691,7 +2095,7 @@
       }
       .msah-buttons {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 6px;
         margin-bottom: 8px;
       }
@@ -1706,6 +2110,10 @@
       }
       .msah-buttons button:hover,
       .msah-icon-button:hover { background: #e2e8f0; }
+      .msah-buttons button:disabled {
+        cursor: not-allowed;
+        opacity: 0.52;
+      }
       .msah-options {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1834,6 +2242,7 @@
         <div class="msah-buttons">
           <button type="button" data-msah-action="analyze" title="重新分析当前棋盘">分析</button>
           <button type="button" data-msah-action="clear" title="移除所有高亮">清除</button>
+          <button type="button" data-msah-action="rescue" title="仅在无确定结论时检查当前悬停格">救援 3/3</button>
         </div>
         <div class="msah-options">
           <label title="棋盘变化后自动重新分析"><input type="checkbox" data-msah-option="auto"> 自动</label>
@@ -1844,7 +2253,7 @@
           <div class="msah-explain-title">推理说明</div>
           <div class="msah-explain-text" data-msah-explain-text>把鼠标移到 OK 或 M 上查看推理。</div>
         </div>
-        <div class="msah-note" data-msah-note>提示：按 ~ 显示/隐藏分析。本脚本只做高亮分析，不发送任何鼠标事件，也不会操作网页棋盘状态。</div>
+        <div class="msah-note" data-msah-note>提示：按 ~ 显示/隐藏分析。本脚本不发送任何鼠标事件，也不会操作网页棋盘状态。</div>
       </div>
     `;
     doc.body.appendChild(panel);
@@ -1862,6 +2271,8 @@
       prob: `msah-${salt}-prob`,
       flagOk: `msah-${salt}-flag-ok`,
       flagQ: `msah-${salt}-flag-q`,
+      rescueSafe: `msah-${salt}-rescue-safe`,
+      rescueMine: `msah-${salt}-rescue-mine`,
       explainFocus: `msah-${salt}-explain-focus`,
       explainLayers: [
         `msah-${salt}-explain-layer-1`,
@@ -1881,6 +2292,8 @@
       names.prob,
       names.flagOk,
       names.flagQ,
+      names.rescueSafe,
+      names.rescueMine,
       names.explainFocus,
       ...names.explainLayers,
     ];
@@ -2028,7 +2441,7 @@
   function clearHighlights(doc, salt) {
     const names = getHighlightClassNames(salt);
     const all = getAllHighlightClasses(salt);
-    const labelClasses = [names.safe, names.mine, names.prob, names.flagQ];
+    const labelClasses = [names.safe, names.mine, names.prob, names.flagQ, names.rescueSafe, names.rescueMine];
     const selector = all.map((c) => `.${c}`).join(", ");
     const handled = new Set();
     for (const element of doc.querySelectorAll(selector)) {
@@ -2052,7 +2465,7 @@
     if (!board || !board.cells) return;
     const names = getHighlightClassNames(salt);
     const all = getAllHighlightClasses(salt);
-    const labelClasses = [names.safe, names.mine, names.prob, names.flagQ];
+    const labelClasses = [names.safe, names.mine, names.prob, names.flagQ, names.rescueSafe, names.rescueMine];
     for (const cell of board.cells) {
       if (cell.element) clearHighlightElement(cell.element, all, labelClasses);
     }
@@ -2068,7 +2481,7 @@
     }
   }
 
-  function getHighlightForCell(cell, result, settings, salt) {
+  function getHighlightForCell(cell, result, settings, salt, rescueHint = null) {
     const names = getHighlightClassNames(salt);
     if (cell.state === "flag") {
       return result.mineKeys.has(cell.key)
@@ -2078,6 +2491,11 @@
 
     if (result.safeKeys.has(cell.key)) return { className: names.safe, label: "OK" };
     if (result.mineKeys.has(cell.key)) return { className: names.mine, label: "M" };
+    if (rescueHint && rescueHint.key === cell.key) {
+      return rescueHint.isMine
+        ? { className: names.rescueMine, label: "避" }
+        : { className: names.rescueSafe, label: "开" };
+    }
 
     if (settings.showProbabilities && result.probabilities.has(cell.key)) {
       const probability = result.probabilities.get(cell.key);
@@ -2112,12 +2530,12 @@
     }
   }
 
-  function renderHighlights(board, result, settings, doc, salt) {
+  function renderHighlights(board, result, settings, doc, salt, rescueHint = null) {
     clearHighlightsFromBoard(board, salt);
 
     for (const cell of board.cells) {
       if (!cell.element) continue;
-      const highlight = getHighlightForCell(cell, result, settings, salt);
+      const highlight = getHighlightForCell(cell, result, settings, salt, rescueHint);
       if (!highlight) continue;
       cell.element.classList.add(highlight.className);
       if (highlight.label) setAssistantAriaLabel(cell.element, highlight.label);
@@ -2213,6 +2631,7 @@
   function bootstrap(doc, opts) {
     const store = (opts && opts.store) || (typeof localStorage !== "undefined" ? localStorage : null);
     const random = (opts && opts.random) || Math.random;
+    const globalObj = (opts && opts.globalObj) || (typeof window !== "undefined" ? window : null);
     const salt = getInstallSalt(store, random);
     migrateSettings(store, salt);
 
@@ -2225,9 +2644,47 @@
     let observer = null;
     let scheduled = false;
     let analysisVisible = true;
+    let rescueTargetKey = null;
+    let rescueHint = null;
+    let latestRescueGameKey = null;
 
     function detachObserver() {
       if (observer) observer.disconnect();
+    }
+
+    function getRescueSource() {
+      return findMatchingRescueSource(globalObj, latestBoard);
+    }
+
+    function getRescueGameKey() {
+      return getCurrentRescueGameKey(globalObj, latestBoard);
+    }
+
+    function pruneRescueHint() {
+      if (!rescueHint || !getClosedBoardCell(latestBoard, rescueHint.key)) {
+        rescueHint = null;
+      }
+    }
+
+    function updateRescueButton() {
+      const button = panel.querySelector("[data-msah-action='rescue']");
+      if (!button) return;
+      const gameKey = getRescueGameKey();
+      const usage = loadRescueUsage(salt, gameKey, store);
+      const remaining = getRescueRemaining(usage);
+      const source = getRescueSource();
+      const targetCell = getClosedBoardCell(latestBoard, rescueTargetKey);
+      button.textContent = `救援 ${remaining}/${RESCUE_LIMIT}`;
+
+      let reason = "";
+      if (!latestBoard || !latestResult) reason = "未检测到棋盘";
+      else if (!isDeadGuessCandidate(latestResult, latestBoard)) reason = "当前还有确定结论";
+      else if (!source) reason = "当前局没有可用答案源";
+      else if (!targetCell) reason = "先把鼠标移到一个未开格";
+      else if (remaining <= 0) reason = "本局救援次数已用完";
+
+      button.disabled = !!reason;
+      button.title = reason || "只检查当前悬停的一个未开格";
     }
 
     function attachObserver() {
@@ -2251,17 +2708,29 @@
       latestBoard = readBoardFromDom(doc);
       if (!latestBoard) {
         latestResult = null;
+        rescueHint = null;
+        rescueTargetKey = null;
+        latestRescueGameKey = null;
         clearHighlights(doc, salt);
         updateExplanation(panel, null);
         updateStatus(panel, null, null);
+        updateRescueButton();
         if (attach) attachObserver();
         return;
       }
       latestBoard.totalMines = readTotalMinesFromDom(doc, latestBoard);
       latestResult = solveBoard(latestBoard);
-      renderHighlights(latestBoard, latestResult, settings, doc, salt);
+      const gameKey = getRescueGameKey();
+      if (gameKey !== latestRescueGameKey) {
+        rescueHint = null;
+        rescueTargetKey = null;
+        latestRescueGameKey = gameKey;
+      }
+      pruneRescueHint();
+      renderHighlights(latestBoard, latestResult, settings, doc, salt, rescueHint);
       updateExplanation(panel, null);
       updateStatus(panel, latestBoard, latestResult, note);
+      updateRescueButton();
       if (attach) attachObserver();
     }
 
@@ -2269,7 +2738,7 @@
       if (!shouldAutoAnalyze(settings, analysisVisible)) return;
       if (scheduled) return;
       scheduled = true;
-      window.setTimeout(() => {
+      globalObj.setTimeout(() => {
         scheduled = false;
         if (!analysisVisible) return;
         analyze();
@@ -2283,9 +2752,13 @@
       clearHighlights(doc, salt);
       latestBoard = null;
       latestResult = null;
+      rescueHint = null;
+      rescueTargetKey = null;
+      latestRescueGameKey = null;
       updateExplanation(panel, null);
       const status = panel.querySelector("[data-msah-status]");
       if (status) status.textContent = "分析已隐藏。按 ~ 或点击“分析”恢复。";
+      updateRescueButton();
     }
 
     function toggleAnalysis() {
@@ -2294,6 +2767,53 @@
       } else {
         analyze({ note: "快捷键" });
       }
+    }
+
+    function rescueCurrentTarget() {
+      if (!latestBoard || !latestResult) analyze({ attach: false });
+      if (!latestBoard || !latestResult) {
+        updateStatus(panel, null, null);
+        updateRescueButton();
+        return;
+      }
+
+      const targetCell = getClosedBoardCell(latestBoard, rescueTargetKey);
+      if (!isDeadGuessCandidate(latestResult, latestBoard)) {
+        updateStatus(panel, latestBoard, latestResult, "当前还有确定结论，未使用救援");
+        updateRescueButton();
+        return;
+      }
+      if (!targetCell) {
+        updateStatus(panel, latestBoard, latestResult, "先把鼠标移到一个未开格");
+        updateRescueButton();
+        return;
+      }
+
+      const source = getRescueSource();
+      const answer = getRescueAnswerFromSource(source, targetCell.key);
+      if (!answer) {
+        updateStatus(panel, latestBoard, latestResult, "当前局没有可用答案源");
+        updateRescueButton();
+        return;
+      }
+
+      const gameKey = getRescueGameKey();
+      const recorded = recordRescueUse(salt, gameKey, targetCell.key, store);
+      if (!recorded.ok) {
+        updateStatus(panel, latestBoard, latestResult, "本局救援次数已用完");
+        updateRescueButton();
+        return;
+      }
+
+      rescueHint = answer;
+      renderHighlights(latestBoard, latestResult, settings, doc, salt, rescueHint);
+      updateStatus(
+        panel,
+        latestBoard,
+        latestResult,
+        `${formatCellKey(targetCell.key)}${answer.isMine ? "避开" : "可开"}`
+      );
+      updateRescueButton();
     }
 
     panel.addEventListener("click", (event) => {
@@ -2314,6 +2834,9 @@
       }
       if (action === "clear") {
         clearAnalysis();
+      }
+      if (action === "rescue") {
+        rescueCurrentTarget();
       }
     });
 
@@ -2338,13 +2861,17 @@
     });
 
     doc.addEventListener("mouseover", (event) => {
-      if (!settings.showExplanations) return;
       if (!latestBoard || !latestResult || !event.target || typeof event.target.closest !== "function") return;
       const cellElement = event.target.closest("div.cell[id^='cell_']");
       const key = cellElementKey(cellElement);
       if (!key) return;
       const boardCell = latestBoard.byKey && latestBoard.byKey.get(key);
       if (!boardCell || boardCell.element !== cellElement) return;
+      if (boardCell.state === "closed") {
+        rescueTargetKey = key;
+        updateRescueButton();
+      }
+      if (!settings.showExplanations) return;
       const explanation = latestResult.explanations && latestResult.explanations.get(key);
       if (!explanation) return;
       updateExplanation(panel, explanation);
@@ -2364,6 +2891,10 @@
     return { salt, settings };
   }
 
+  if (typeof window !== "undefined") {
+    installRescueSocketCapture(window);
+  }
+
   const core = {
     keyOf,
     parseKey,
@@ -2376,22 +2907,36 @@
       clearHighlights,
       clearExplanationHighlights,
       classTokensWithoutAssistantClasses,
+      applyRescueTouchCells,
+      captureRescueClickRequest,
+      captureRescueGameInit,
+      captureRescueSocketResponse,
+      captureRescueTouchUpdate,
       createPanel,
+      createRescueState,
       estimateProbabilities,
+      findMatchingRescueSource,
       formatExplanation,
       formatExplanationHtml,
       getAllHighlightClasses,
       getHighlightClassNames,
       getHighlightForCell,
       getInstallSalt,
+      getRescueAnswerFromSource,
+      getRescueRemaining,
+      getRescueState,
+      getRescueStorageKey,
       getStorageKey,
       getAutoAnalyzeObserverTargets,
+      installRescueSocketCapture,
       isAssistantOnlyClassMutation,
       isAnalysisShortcut,
       isBoardStructureMutation,
+      isDeadGuessCandidate,
       isEditableElement,
       isRelevantAutoAnalyzeMutation,
       loadSettings,
+      loadRescueUsage,
       migrateSettings,
       normalizeBoard,
       readBoardFromDom,
@@ -2401,6 +2946,8 @@
       renderHighlights,
       renderExplanationHighlights,
       saveSettings,
+      recordRescueUse,
+      saveRescueUsage,
       shouldAutoAnalyze,
       updateExplanationModule,
     },

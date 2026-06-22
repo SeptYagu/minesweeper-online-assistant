@@ -318,6 +318,45 @@ function fakeCell(id) {
       label: "60%",
     }
   );
+  assert.deepEqual(
+    plain(
+      core._private.getHighlightForCell(
+        { ...c(2, 0, "closed"), key: "2,0" },
+        result,
+        { showProbabilities: true },
+        "abc12345",
+        { key: "2,0", isMine: false }
+      )
+    ),
+    {
+      className: "msah-abc12345-rescue-safe",
+      label: "开",
+    }
+  );
+  assert.equal(core._private.isDeadGuessCandidate(result), false);
+  assert.equal(
+    core._private.isDeadGuessCandidate(
+      { safeKeys: new Set(), mineKeys: new Set(["1,0"]) },
+      core._private.normalizeBoard({ cells: [c(1, 0, "flag"), c(2, 0, "closed")] })
+    ),
+    true,
+    "a confirmed already-flagged mine should not block dead-guess rescue"
+  );
+  assert.equal(
+    core._private.isDeadGuessCandidate(
+      { safeKeys: new Set(), mineKeys: new Set(["2,0"]) },
+      core._private.normalizeBoard({ cells: [c(1, 0, "flag"), c(2, 0, "closed")] })
+    ),
+    false,
+    "an unflagged closed M is still an actionable deterministic move"
+  );
+  assert.equal(
+    core._private.isDeadGuessCandidate({
+      safeKeys: new Set(),
+      mineKeys: new Set(),
+    }),
+    true
+  );
 }
 
 console.log("solver tests passed");
