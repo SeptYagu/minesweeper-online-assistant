@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.2.31
+// @version      0.2.32
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.2.31";
+  const ASSISTANT_VERSION = "0.2.32";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_STATE_KEY = "__MSAH_RESCUE_STATE";
@@ -34,6 +34,7 @@
   const CELL_ID_RE = /^cell_(\d+)_(\d+)$/;
   const TYPE_CLASS_RE = /^(?:[a-z0-9]+_)?type([0-8])$/i;
   const FLAG_CLASS_RE = /^[a-z0-9]+_flag$/i;
+  const QUESTION_CLASS_RE = /^(?:[a-z0-9]+_)?(?:question|question_mark|qmark)$/i;
   const originalAriaLabels = new WeakMap();
   const assistantLabeledElements = new Set();
 
@@ -181,6 +182,7 @@
       trusted: true,
       available: mineCount === mines,
       reason: mineCount === mines ? "" : "雷图尚未明文可用",
+      lastMarkedKey: null,
       updatedAt: Date.now(),
     };
     state.boards[gameId] = source;
@@ -207,9 +209,15 @@
         type = 0;
       }
       const index = x * source.height + y;
+      const previousFlagged = !!source.flags[index];
       source.types[index] = Number.isFinite(type) ? type : source.types[index];
       source.opened[index] = Number.isFinite(opened) ? opened : source.opened[index];
       source.flags[index] = Number.isFinite(flagged) ? flagged : source.flags[index];
+      if (!previousFlagged && source.flags[index]) {
+        source.lastMarkedKey = keyOf(x, y);
+      } else if (previousFlagged && !source.flags[index] && source.lastMarkedKey === keyOf(x, y)) {
+        source.lastMarkedKey = null;
+      }
       changed = true;
     }
     if (changed) {
@@ -462,13 +470,39 @@
     return board.cells.some(
       (cell) =>
         cell &&
-        cell.state === "closed" &&
+        (cell.state === "closed" || cell.state === "question") &&
         (result.safeKeys.has(cell.key) || result.mineKeys.has(cell.key))
     );
   }
 
   function isDeadGuessCandidate(result, board = null) {
     return !!result && !hasActionableDeterministicMove(result, board);
+  }
+
+  function isRescueMarkedCell(cell, result) {
+    if (!cell) return false;
+    if (cell.state === "question") return true;
+    return cell.state === "flag" && !(result && result.mineKeys && result.mineKeys.has(cell.key));
+  }
+
+  function findRescueMarkedTarget(board, result, source = null) {
+    const candidates =
+      board && Array.isArray(board.cells)
+        ? board.cells.filter((cell) => isRescueMarkedCell(cell, result))
+        : [];
+    if (source && source.lastMarkedKey) {
+      const recent = candidates.find((cell) => cell.key === source.lastMarkedKey);
+      if (recent) return { cell: recent, count: candidates.length, candidates };
+    }
+    const questionCandidates = candidates.filter((cell) => cell.state === "question");
+    if (questionCandidates.length === 1) {
+      return { cell: questionCandidates[0], count: candidates.length, candidates };
+    }
+    return {
+      cell: candidates.length === 1 ? candidates[0] : null,
+      count: candidates.length,
+      candidates,
+    };
   }
 
   function findMatchingRescueSource(globalObj, board) {
@@ -514,7 +548,11 @@
 
   function getClosedBoardCell(board, key) {
     const cell = board && board.byKey ? board.byKey.get(key) : null;
-    return cell && cell.state === "closed" ? cell : null;
+    return cell && (cell.state === "closed" || cell.state === "flag" || cell.state === "question") ? cell : null;
+  }
+
+  function isQuestionClass(className) {
+    return QUESTION_CLASS_RE.test(className);
   }
 
   function isRealFlagClass(className) {
@@ -537,8 +575,10 @@
 
     const opened = classNames.includes("opened") || number !== null;
     const flagged = classNames.some(isRealFlagClass);
+    const questioned = classNames.some(isQuestionClass);
 
     if (flagged && !opened) return { state: "flag", number: null };
+    if (questioned && !opened) return { state: "question", number: null };
     if (opened) return { state: "open", number };
     return { state: "closed", number: null };
   }
@@ -752,7 +792,7 @@
         if (knownMines.has(neighborKey)) {
           knownMineCount += 1;
         } else if (
-          (neighbor.state === "closed" || neighbor.state === "flag") &&
+          (neighbor.state === "closed" || neighbor.state === "flag" || neighbor.state === "question") &&
           !inferredSafe.has(neighborKey)
         ) {
           unknown.push(neighborKey);
@@ -1251,7 +1291,7 @@
 
     const outsideKeys = [];
     for (const cell of board.cells) {
-      if (cell.state !== "closed" && cell.state !== "flag") continue;
+      if (cell.state !== "closed" && cell.state !== "flag" && cell.state !== "question") continue;
       if (knownMines.has(cell.key) || knownSafe.has(cell.key) || componentVariables.has(cell.key)) continue;
       outsideKeys.push(cell.key);
     }
@@ -1484,13 +1524,23 @@
     const probabilities = estimateProbabilities(board, constraints, inferredMines, inferredSafe);
     for (const [key, probability] of exact.probabilities) {
       const cell = board.byKey.get(key);
-      if (cell && cell.state === "closed" && !inferredMines.has(key) && !inferredSafe.has(key)) {
+      if (
+        cell &&
+        (cell.state === "closed" || cell.state === "question") &&
+        !inferredMines.has(key) &&
+        !inferredSafe.has(key)
+      ) {
         probabilities.set(key, probability);
       }
     }
     for (const [key, probability] of global.probabilities) {
       const cell = board.byKey.get(key);
-      if (cell && cell.state === "closed" && !inferredMines.has(key) && !inferredSafe.has(key)) {
+      if (
+        cell &&
+        (cell.state === "closed" || cell.state === "question") &&
+        !inferredMines.has(key) &&
+        !inferredSafe.has(key)
+      ) {
         probabilities.set(key, probability);
       }
     }
@@ -1507,7 +1557,7 @@
         width: board.width,
         height: board.height,
         open: board.cells.filter((cell) => cell.state === "open").length,
-        closed: board.cells.filter((cell) => cell.state === "closed").length,
+        closed: board.cells.filter((cell) => cell.state === "closed" || cell.state === "question").length,
         flags: board.cells.filter((cell) => cell.state === "flag").length,
         totalMines: board.totalMines ?? null,
         iterations,
@@ -1535,7 +1585,11 @@
 
     const probabilities = new Map();
     for (const cell of board.cells) {
-      if (cell.state !== "closed" || inferredSafe.has(cell.key) || inferredMines.has(cell.key)) {
+      if (
+        (cell.state !== "closed" && cell.state !== "question") ||
+        inferredSafe.has(cell.key) ||
+        inferredMines.has(cell.key)
+      ) {
         continue;
       }
       if (counts.has(cell.key)) {
@@ -1904,7 +1958,9 @@
     const remaining = readRemainingMinesFromDom(doc);
     if (!Number.isInteger(remaining) || remaining < 0 || remaining >= 999) return null;
     const flags = board.cells.filter((cell) => cell.state === "flag").length;
-    const hidden = board.cells.filter((cell) => cell.state === "closed" || cell.state === "flag").length;
+    const hidden = board.cells.filter(
+      (cell) => cell.state === "closed" || cell.state === "flag" || cell.state === "question"
+    ).length;
     const total = remaining + flags;
     if (!Number.isInteger(total) || total < 0 || total > hidden) return null;
     return total;
@@ -2242,7 +2298,7 @@
         <div class="msah-buttons">
           <button type="button" data-msah-action="analyze" title="重新分析当前棋盘">分析</button>
           <button type="button" data-msah-action="clear" title="移除所有高亮">清除</button>
-          <button type="button" data-msah-action="rescue" title="仅在无确定结论时检查当前悬停格">救援 3/3</button>
+          <button type="button" data-msah-action="rescue" title="仅在无确定结论时检查一个问号标记">救援 3/3</button>
         </div>
         <div class="msah-options">
           <label title="棋盘变化后自动重新分析"><input type="checkbox" data-msah-option="auto"> 自动</label>
@@ -2483,6 +2539,12 @@
 
   function getHighlightForCell(cell, result, settings, salt, rescueHint = null) {
     const names = getHighlightClassNames(salt);
+    if (rescueHint && rescueHint.key === cell.key) {
+      return rescueHint.isMine
+        ? { className: names.rescueMine, label: "避" }
+        : { className: names.rescueSafe, label: "开" };
+    }
+
     if (cell.state === "flag") {
       return result.mineKeys.has(cell.key)
         ? { className: names.flagOk, label: null }
@@ -2491,11 +2553,6 @@
 
     if (result.safeKeys.has(cell.key)) return { className: names.safe, label: "OK" };
     if (result.mineKeys.has(cell.key)) return { className: names.mine, label: "M" };
-    if (rescueHint && rescueHint.key === cell.key) {
-      return rescueHint.isMine
-        ? { className: names.rescueMine, label: "避" }
-        : { className: names.rescueSafe, label: "开" };
-    }
 
     if (settings.showProbabilities && result.probabilities.has(cell.key)) {
       const probability = result.probabilities.get(cell.key);
@@ -2644,7 +2701,6 @@
     let observer = null;
     let scheduled = false;
     let analysisVisible = true;
-    let rescueTargetKey = null;
     let rescueHint = null;
     let latestRescueGameKey = null;
 
@@ -2673,18 +2729,19 @@
       const usage = loadRescueUsage(salt, gameKey, store);
       const remaining = getRescueRemaining(usage);
       const source = getRescueSource();
-      const targetCell = getClosedBoardCell(latestBoard, rescueTargetKey);
+      const target = findRescueMarkedTarget(latestBoard, latestResult, source);
       button.textContent = `救援 ${remaining}/${RESCUE_LIMIT}`;
 
       let reason = "";
       if (!latestBoard || !latestResult) reason = "未检测到棋盘";
       else if (!isDeadGuessCandidate(latestResult, latestBoard)) reason = "当前还有确定结论";
       else if (!source) reason = "当前局没有可用答案源";
-      else if (!targetCell) reason = "先把鼠标移到一个未开格";
+      else if (target.count === 0) reason = "先用问号标记一个死猜格";
+      else if (!target.cell) reason = "只保留一个救援问号";
       else if (remaining <= 0) reason = "本局救援次数已用完";
 
       button.disabled = !!reason;
-      button.title = reason || "只检查当前悬停的一个未开格";
+      button.title = reason || "只检查当前问号标记的一个格";
     }
 
     function attachObserver() {
@@ -2709,7 +2766,6 @@
       if (!latestBoard) {
         latestResult = null;
         rescueHint = null;
-        rescueTargetKey = null;
         latestRescueGameKey = null;
         clearHighlights(doc, salt);
         updateExplanation(panel, null);
@@ -2723,7 +2779,6 @@
       const gameKey = getRescueGameKey();
       if (gameKey !== latestRescueGameKey) {
         rescueHint = null;
-        rescueTargetKey = null;
         latestRescueGameKey = gameKey;
       }
       pruneRescueHint();
@@ -2753,7 +2808,6 @@
       latestBoard = null;
       latestResult = null;
       rescueHint = null;
-      rescueTargetKey = null;
       latestRescueGameKey = null;
       updateExplanation(panel, null);
       const status = panel.querySelector("[data-msah-status]");
@@ -2770,26 +2824,39 @@
     }
 
     function rescueCurrentTarget() {
-      if (!latestBoard || !latestResult) analyze({ attach: false });
+      analyze();
       if (!latestBoard || !latestResult) {
         updateStatus(panel, null, null);
         updateRescueButton();
         return;
       }
 
-      const targetCell = getClosedBoardCell(latestBoard, rescueTargetKey);
       if (!isDeadGuessCandidate(latestResult, latestBoard)) {
         updateStatus(panel, latestBoard, latestResult, "当前还有确定结论，未使用救援");
         updateRescueButton();
         return;
       }
-      if (!targetCell) {
-        updateStatus(panel, latestBoard, latestResult, "先把鼠标移到一个未开格");
+
+      const source = getRescueSource();
+      if (!source) {
+        updateStatus(panel, latestBoard, latestResult, "当前局没有可用答案源");
         updateRescueButton();
         return;
       }
 
-      const source = getRescueSource();
+      const target = findRescueMarkedTarget(latestBoard, latestResult, source);
+      const targetCell = target.cell;
+      if (target.count === 0) {
+        updateStatus(panel, latestBoard, latestResult, "先用问号标记一个死猜格");
+        updateRescueButton();
+        return;
+      }
+      if (!targetCell) {
+        updateStatus(panel, latestBoard, latestResult, "只保留一个救援问号");
+        updateRescueButton();
+        return;
+      }
+
       const answer = getRescueAnswerFromSource(source, targetCell.key);
       if (!answer) {
         updateStatus(panel, latestBoard, latestResult, "当前局没有可用答案源");
@@ -2867,10 +2934,6 @@
       if (!key) return;
       const boardCell = latestBoard.byKey && latestBoard.byKey.get(key);
       if (!boardCell || boardCell.element !== cellElement) return;
-      if (boardCell.state === "closed") {
-        rescueTargetKey = key;
-        updateRescueButton();
-      }
       if (!settings.showExplanations) return;
       const explanation = latestResult.explanations && latestResult.explanations.get(key);
       if (!explanation) return;
@@ -2915,6 +2978,7 @@
       createPanel,
       createRescueState,
       estimateProbabilities,
+      findRescueMarkedTarget,
       findMatchingRescueSource,
       formatExplanation,
       formatExplanationHtml,
@@ -2934,7 +2998,9 @@
       isBoardStructureMutation,
       isDeadGuessCandidate,
       isEditableElement,
+      isQuestionClass,
       isRelevantAutoAnalyzeMutation,
+      isRescueMarkedCell,
       loadSettings,
       loadRescueUsage,
       migrateSettings,

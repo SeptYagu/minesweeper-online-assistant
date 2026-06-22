@@ -319,6 +319,13 @@ function makeFakeDoc() {
   core._private.captureRescueTouchUpdate(state, [1, "77", { touchCells: [1, 1, 12, 3, 0] }, null, false, null]);
   assert.equal(source.types[3], 3);
   assert.equal(source.opened[3], 1);
+
+  core._private.captureRescueTouchUpdate(state, [1, "77", { touchCells: [0, 1, 13, 0, 1] }, null, false, null]);
+  assert.equal(source.flags[1], 1);
+  assert.equal(source.lastMarkedKey, "0,1");
+  core._private.captureRescueTouchUpdate(state, [1, "77", { touchCells: [0, 1, 13, 0, 0] }, null, false, null]);
+  assert.equal(source.flags[1], 0);
+  assert.equal(source.lastMarkedKey, null);
 }
 
 {
@@ -388,6 +395,8 @@ function makeFakeDoc() {
   }
   assert.equal(html.includes("data-msah-note"), true, "panel should keep a note block");
   assert.equal(html.includes("data-msah-option=\"explanations\""), true, "panel should include explanation toggle");
+  assert.equal(html.includes("当前悬停格"), false, "rescue should no longer depend on hover targeting");
+  assert.equal(html.includes("问号标记"), true, "rescue should target a marked/question cell");
   assert.equal(html.includes("aria-label"), false, "panel should not reference data-* label attributes");
 }
 

@@ -286,6 +286,10 @@ function fakeCell(id) {
     state: "flag",
     number: null,
   });
+  assert.deepEqual(plain(core.readCellStateFromClassNames("cell size24 hd_closed hd_question")), {
+    state: "question",
+    number: null,
+  });
   assert.deepEqual(plain(core.readCellStateFromClassNames("cell size24 opened hd_type3")), {
     state: "open",
     number: 3,
@@ -321,7 +325,7 @@ function fakeCell(id) {
   assert.deepEqual(
     plain(
       core._private.getHighlightForCell(
-        { ...c(2, 0, "closed"), key: "2,0" },
+        { ...c(2, 0, "flag"), key: "2,0" },
         result,
         { showProbabilities: true },
         "abc12345",
@@ -332,6 +336,35 @@ function fakeCell(id) {
       className: "msah-abc12345-rescue-safe",
       label: "开",
     }
+  );
+  const targetBoard = core._private.normalizeBoard({
+    cells: [c(0, 0, "closed"), c(1, 0, "flag"), c(2, 0, "flag")],
+  });
+  assert.equal(
+    core._private.findRescueMarkedTarget(targetBoard, { ...result, mineKeys: new Set(["1,0"]) }).cell.key,
+    "2,0"
+  );
+  assert.equal(
+    core._private.findRescueMarkedTarget(
+      targetBoard,
+      { safeKeys: new Set(), mineKeys: new Set(), probabilities: new Map() },
+      { lastMarkedKey: "1,0" }
+    ).cell.key,
+    "1,0"
+  );
+  assert.equal(
+    core._private.findRescueMarkedTarget(targetBoard, {
+      safeKeys: new Set(),
+      mineKeys: new Set(),
+      probabilities: new Map(),
+    }).cell,
+    null,
+    "multiple unconfirmed marks should require narrowing to one target"
+  );
+  assert.equal(
+    solve([c(0, 0, "open", 1), c(1, 0, "question")]).mineKeys.has("1,0"),
+    true,
+    "question-marked cells should remain solver candidates"
   );
   assert.equal(core._private.isDeadGuessCandidate(result), false);
   assert.equal(
