@@ -424,6 +424,28 @@ function makeFakeDoc() {
   assert.deepEqual(JSON.parse(JSON.stringify(source.types)), [10, 0, 0, 10]);
   assert.equal(store.has(core._private.getRescueSourceCacheKey("82")), true);
 
+  core._private.captureRescueTouchUpdate(state, [
+    8,
+    "82",
+    { touchCells: [0, 0, 13, 0, 0] },
+    0,
+    false,
+    null,
+  ]);
+  assert.equal(source.available, true, "rollback should not erase a loss-revealed mine map");
+  assert.deepEqual(JSON.parse(JSON.stringify(source.types)), [10, 0, 0, 10]);
+
+  state.boards["82"] = {
+    ...source,
+    types: [0, 0, 0, 0],
+    available: false,
+    reason: "回撤响应覆盖了失败雷图",
+    revealedByLoss: false,
+  };
+  const restoredSamePageStatus = core._private.getRescueSourceStatus(fakeWindow, { width: 2, height: 2 });
+  assert.equal(restoredSamePageStatus.ok, true, "same-game cache should take priority over stale unavailable state");
+  assert.equal(restoredSamePageStatus.source.restoredFromCache, true);
+
   const reloadedWindow = {
     localStorage: store,
     location: { pathname: "/game/82" },

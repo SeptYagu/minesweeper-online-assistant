@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.3.4
+// @version      0.3.5
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.3.4";
+  const ASSISTANT_VERSION = "0.3.5";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_SOURCE_STORAGE_PREFIX = "msah-rescue-source-v1:";
@@ -501,7 +501,13 @@
       const previousFlagged = !!source.flags[index];
       const normalizedType = Number.isFinite(type) ? normalizeRescueTypeValue(type) : source.types[index];
       if (normalizedType === RESCUE_MINE_VALUE) sawMine = true;
-      source.types[index] = normalizedType;
+      const keepLossRevealedMine =
+        source.revealedByLoss &&
+        source.available &&
+        !options.loss &&
+        source.types[index] === RESCUE_MINE_VALUE &&
+        normalizedType !== RESCUE_MINE_VALUE;
+      if (!keepLossRevealedMine) source.types[index] = normalizedType;
       source.opened[index] = Number.isFinite(opened) ? opened : source.opened[index];
       source.flags[index] = Number.isFinite(flagged) ? flagged : source.flags[index];
       if (!previousFlagged && source.flags[index]) {
@@ -831,13 +837,17 @@
     if (!state || !state.boards || !board) return null;
     const preferred = getCurrentPageGameId(globalObj) || state.currentGameId;
     const candidates = [];
-    if (preferred && state.boards[preferred]) candidates.push(state.boards[preferred]);
+    if (preferred && state.boards[preferred] && state.boards[preferred].available) {
+      candidates.push(state.boards[preferred]);
+    }
     if (preferred && (!state.boards[preferred] || !state.boards[preferred].available)) {
       const cached = loadRescueSourceCache(globalObj, preferred, board);
       if (cached) {
         state.boards[preferred] = cached;
         state.currentGameId = preferred;
         candidates.push(cached);
+      } else if (state.boards[preferred]) {
+        candidates.push(state.boards[preferred]);
       }
     }
     for (const source of Object.values(state.boards)) {
