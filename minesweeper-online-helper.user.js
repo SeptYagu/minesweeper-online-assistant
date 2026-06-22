@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.3.2
+// @version      0.3.3
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,9 +16,10 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.3.2";
+  const ASSISTANT_VERSION = "0.3.3";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
+  const RESCUE_SOURCE_STORAGE_PREFIX = "msah-rescue-source-v1:";
   const RESCUE_STATE_KEY = "__MSAH_RESCUE_STATE";
   const RESCUE_LIMIT = 3;
   const RESCUE_MINE_VALUE = 10;
@@ -28,6 +29,7 @@
   const RESCUE_FLAGGED_TYPE_MASK = 16;
   const RESCUE_OPENED_TYPE_MASK = 32;
   const GAME_LEFT_CLICK = 0;
+  const RESCUE_LOSE_STATES = new Set([2, 102]);
   const SALT_LENGTH = 8;
   const DEFAULT_MAX_EXACT_CELLS = 18;
   const DEFAULT_MAX_EXACT_MODELS = 50000;
@@ -94,6 +96,10 @@
         : "";
     const match = path.match(/\/game\/(\d+)/);
     return match ? match[1] : null;
+  }
+
+  function isRescueLossState(value) {
+    return RESCUE_LOSE_STATES.has(Number(value));
   }
 
   function createRescueState() {
@@ -172,6 +178,92 @@
 
   function countRescueMines(types) {
     return types.filter((value) => value === RESCUE_MINE_VALUE).length;
+  }
+
+  function getRescueSourceCacheKey(gameId) {
+    return `${RESCUE_SOURCE_STORAGE_PREFIX}${gameId}`;
+  }
+
+  function getRescueSourceCacheStore(globalObj) {
+    try {
+      return globalObj && globalObj.localStorage ? globalObj.localStorage : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function saveRescueSourceCache(globalObj, source) {
+    const store = getRescueSourceCacheStore(globalObj);
+    if (!store || !source || !source.available || !source.revealedByLoss || !source.gameId) return false;
+    try {
+      store.setItem(
+        getRescueSourceCacheKey(source.gameId),
+        JSON.stringify({
+          version: 1,
+          gameId: source.gameId,
+          width: source.width,
+          height: source.height,
+          mines: source.mines,
+          types: source.types,
+          revealedByLoss: true,
+          updatedAt: Date.now(),
+        })
+      );
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function loadRescueSourceCache(globalObj, gameId, board) {
+    const store = getRescueSourceCacheStore(globalObj);
+    if (!store || !gameId || !board) return null;
+    let parsed = null;
+    try {
+      const raw = store.getItem(getRescueSourceCacheKey(gameId));
+      if (!raw) return null;
+      parsed = JSON.parse(raw);
+    } catch (_error) {
+      return null;
+    }
+    const width = Number(parsed && parsed.width);
+    const height = Number(parsed && parsed.height);
+    const mines = Number(parsed && parsed.mines);
+    const length = width * height;
+    if (
+      parsed.version !== 1 ||
+      normalizeRescueGameId(parsed.gameId) !== gameId ||
+      width !== board.width ||
+      height !== board.height ||
+      !Number.isInteger(mines) ||
+      !Number.isInteger(length) ||
+      length <= 0
+    ) {
+      return null;
+    }
+    const types = readRescueTypeArray(parsed.types, length);
+    if (!types || countRescueMines(types) !== mines || !types.every(isCompleteRescueType)) return null;
+    const source = {
+      gameId,
+      width,
+      height,
+      mines,
+      types,
+      opened: new Array(length).fill(0),
+      flags: new Array(length).fill(0),
+      hasOpened: false,
+      trusted: true,
+      available: false,
+      reason: "",
+      unavailableReason: "失败后雷图尚未完整",
+      lpe: null,
+      lastMarkedKey: null,
+      revealedByLoss: true,
+      restoredFromCache: true,
+      updatedAt: Date.now(),
+    };
+    updateRescueSourceAvailability(source, source.unavailableReason);
+    return source.available ? source : null;
   }
 
   function isCompleteRescueType(value) {
@@ -307,6 +399,7 @@
       reason,
       unavailableReason: reason,
       lastMarkedKey: null,
+      revealedByLoss: false,
       updatedAt: Date.now(),
     };
     state.boards[gameId] = source;
@@ -366,9 +459,10 @@
               encoded: args[5],
               saltA: args[8],
               saltB: args[9],
-            }
+          }
           : null,
       lastMarkedKey: null,
+      revealedByLoss: false,
       updatedAt: Date.now(),
     };
     updateRescueSourceAvailability(source, source.unavailableReason);
@@ -377,9 +471,11 @@
     return source;
   }
 
-  function applyRescueTouchCells(source, touchCells) {
+  function applyRescueTouchCells(source, touchCells, options = {}) {
     if (!source || !Array.isArray(touchCells)) return false;
     let changed = false;
+    let sawMine = false;
+    let sawBoom = false;
     for (let i = 0; i + 4 < touchCells.length; i += 5) {
       const x = Number(touchCells[i]);
       const y = Number(touchCells[i + 1]);
@@ -388,7 +484,11 @@
       const flagged = Number(touchCells[i + 4]);
       if (!Number.isInteger(x) || !Number.isInteger(y)) continue;
       if (x < 0 || y < 0 || x >= source.width || y >= source.height) continue;
-      if (type === RESCUE_BOOM_VALUE) continue;
+      if (type === RESCUE_BOOM_VALUE) {
+        type = RESCUE_MINE_VALUE;
+        opened = 1;
+        sawBoom = true;
+      }
       if (type === RESCUE_OPENED_VALUE) {
         type = opened;
         opened = 1;
@@ -397,7 +497,9 @@
       }
       const index = x * source.height + y;
       const previousFlagged = !!source.flags[index];
-      source.types[index] = Number.isFinite(type) ? normalizeRescueTypeValue(type) : source.types[index];
+      const normalizedType = Number.isFinite(type) ? normalizeRescueTypeValue(type) : source.types[index];
+      if (normalizedType === RESCUE_MINE_VALUE) sawMine = true;
+      source.types[index] = normalizedType;
       source.opened[index] = Number.isFinite(opened) ? opened : source.opened[index];
       source.flags[index] = Number.isFinite(flagged) ? flagged : source.flags[index];
       if (!previousFlagged && source.flags[index]) {
@@ -409,6 +511,12 @@
     }
     if (changed) {
       source.hasOpened = source.opened.some(Boolean);
+      if (sawBoom || (options.loss && sawMine)) {
+        source.trusted = true;
+        source.reason = "";
+        source.revealedByLoss = true;
+        source.unavailableReason = "失败后雷图尚未完整";
+      }
       updateRescueSourceAvailability(source, source.unavailableReason || "网站未下发完整雷图");
     }
     return changed;
@@ -420,7 +528,11 @@
     const action = args[2];
     const source = gameId ? state.boards[gameId] : null;
     if (!source || !action || !Array.isArray(action.touchCells)) return false;
-    return applyRescueTouchCells(source, action.touchCells);
+    const changed = applyRescueTouchCells(source, action.touchCells, { loss: isRescueLossState(args[3]) });
+    if (changed && source.available && source.revealedByLoss) {
+      saveRescueSourceCache(state.globalObj, source);
+    }
+    return changed;
   }
 
   function captureRescueClickRequest(state, requestPayload) {
@@ -707,11 +819,19 @@
   }
 
   function findRescueSourceCandidate(globalObj, board) {
-    const state = globalObj && globalObj[RESCUE_STATE_KEY];
+    const state = getRescueState(globalObj);
     if (!state || !state.boards || !board) return null;
     const preferred = getCurrentPageGameId(globalObj) || state.currentGameId;
     const candidates = [];
     if (preferred && state.boards[preferred]) candidates.push(state.boards[preferred]);
+    if (preferred && (!state.boards[preferred] || !state.boards[preferred].available)) {
+      const cached = loadRescueSourceCache(globalObj, preferred, board);
+      if (cached) {
+        state.boards[preferred] = cached;
+        state.currentGameId = preferred;
+        candidates.push(cached);
+      }
+    }
     for (const source of Object.values(state.boards)) {
       if (!candidates.includes(source)) candidates.push(source);
     }
@@ -2513,7 +2633,7 @@
           <div class="msah-explain-title">推理说明</div>
           <div class="msah-explain-text" data-msah-explain-text>把鼠标移到 OK 或 M 上查看推理。</div>
         </div>
-        <div class="msah-note" data-msah-note>用法：OK 可开，M 可插旗；救援需脚本从开局前运行且本局有可验证答案源，先临时插旗一个死猜格再点救援，每局最多 3 格。本脚本不发送鼠标事件，也不会操作网页棋盘状态。</div>
+        <div class="msah-note" data-msah-note>用法：OK 可开，M 可插旗；救援需本局有可验证答案源，踩雷后若网站允许继续玩会缓存失败雷图。先临时插旗一个死猜格再点救援，每局最多 3 格。本脚本不发送鼠标事件，也不会操作棋盘。</div>
       </div>
     `;
     doc.body.appendChild(panel);
@@ -3230,6 +3350,7 @@
       getInstallSalt,
       getRescueAnswerFromSource,
       getRescueRemaining,
+      getRescueSourceCacheKey,
       getRescueSourceStatus,
       getRescueState,
       getRescueStorageKey,
@@ -3246,6 +3367,7 @@
       isRelevantAutoAnalyzeMutation,
       isRescueMarkedCell,
       loadSettings,
+      loadRescueSourceCache,
       loadRescueUsage,
       migrateSettings,
       normalizeBoard,
@@ -3258,6 +3380,7 @@
       renderExplanationHighlights,
       refreshRescueSource,
       saveSettings,
+      saveRescueSourceCache,
       recordRescueUse,
       saveRescueUsage,
       shouldAutoAnalyze,

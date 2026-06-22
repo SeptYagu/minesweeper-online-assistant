@@ -382,6 +382,47 @@ function makeFakeDoc() {
 }
 
 {
+  const store = makeFakeStore();
+  const fakeWindow = {
+    localStorage: store,
+    location: { pathname: "/game/82" },
+  };
+  const state = core._private.getRescueState(fakeWindow);
+  const source = core._private.captureRescueGameInit(state, [
+    { id: 82, sizeX: 2, sizeY: 2, mines: 2 },
+    { t: [0, 0, 0, 0], o: [0, 0, 0, 0], f: [0, 0, 0, 0] },
+  ]);
+  assert.equal(source.available, false);
+  source.trusted = false;
+  source.reason = "首开触发过雷位重排";
+  core._private.captureRescueTouchUpdate(state, [
+    8,
+    "82",
+    { touchCells: [0, 0, 10, 1, 0, 0, 0, 11, 1, 0, 1, 1, 10, 1, 0] },
+    2,
+    true,
+    null,
+  ]);
+  assert.equal(source.trusted, true);
+  assert.equal(source.available, true);
+  assert.equal(source.revealedByLoss, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(source.types)), [10, 0, 0, 10]);
+  assert.equal(store.has(core._private.getRescueSourceCacheKey("82")), true);
+
+  const reloadedWindow = {
+    localStorage: store,
+    location: { pathname: "/game/82" },
+  };
+  const status = core._private.getRescueSourceStatus(reloadedWindow, { width: 2, height: 2 });
+  assert.equal(status.ok, true);
+  assert.equal(status.source.restoredFromCache, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(core._private.getRescueAnswerFromSource(status.source, "1,1"))), {
+    key: "1,1",
+    isMine: true,
+  });
+}
+
+{
   const fakeWindow = {};
   const state = core._private.getRescueState(fakeWindow);
   const source = core._private.captureRescueGameInit(state, [
@@ -507,7 +548,7 @@ function makeFakeDoc() {
   assert.equal(html.includes("当前悬停格"), false, "rescue should no longer depend on hover targeting");
   assert.equal(html.includes("问号标记"), false, "rescue copy should not rely on unavailable site question marks");
   assert.equal(html.includes("临时旗标记"), true, "rescue should target a temporary flag mark");
-  assert.equal(html.includes("救援需脚本从开局前运行"), true, "panel should explain rescue startup requirement");
+  assert.equal(html.includes("失败雷图"), true, "panel should explain loss-revealed rescue source");
   assert.equal(html.includes("可验证答案源"), true, "panel should explain rescue source requirement");
   assert.equal(html.includes("每局最多 3 格"), true, "panel should explain rescue target limit");
   assert.equal(html.includes("aria-label"), false, "panel should not reference data-* label attributes");
