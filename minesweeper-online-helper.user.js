@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.2.34
+// @version      0.2.35
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.2.34";
+  const ASSISTANT_VERSION = "0.2.35";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_STATE_KEY = "__MSAH_RESCUE_STATE";
@@ -99,13 +99,18 @@
       boards: {},
       currentGameId: null,
       installed: false,
+      globalObj: null,
     };
   }
 
   function getRescueState(globalObj) {
     if (!globalObj) return null;
-    if (globalObj[RESCUE_STATE_KEY]) return globalObj[RESCUE_STATE_KEY];
+    if (globalObj[RESCUE_STATE_KEY]) {
+      globalObj[RESCUE_STATE_KEY].globalObj = globalObj;
+      return globalObj[RESCUE_STATE_KEY];
+    }
     const state = createRescueState();
+    state.globalObj = globalObj;
     try {
       Object.defineProperty(globalObj, RESCUE_STATE_KEY, {
         value: state,
@@ -153,6 +158,107 @@
     return types.filter((value) => value === RESCUE_MINE_VALUE).length;
   }
 
+  function rescueSiteKeySeed(e, i, a, r, l, p) {
+    return 2 * (e + i) + 3 * (a + r) + 4 * l + p;
+  }
+
+  function getRescueServerCodeSum(server) {
+    const text = typeof server === "string" ? server : "";
+    let sum = 0;
+    for (let i = 0; i < text.length; i += 1) sum += text.charCodeAt(i);
+    return sum;
+  }
+
+  function getRescueLpeFunctionList(globalObj, lpeKey) {
+    const list = globalObj && lpeKey ? globalObj[`$${lpeKey}`] : null;
+    if (!list) return null;
+    for (let i = 0; i < 9; i += 1) {
+      if (typeof list[i] !== "function") return null;
+    }
+    return list;
+  }
+
+  function createRescueLpeKeyFunction(globalObj, meta, width, height, mines, saltA, saltB) {
+    if (!meta || !meta.lpe) return null;
+    const funcs = getRescueLpeFunctionList(globalObj, meta.lpe);
+    const gameId = Number(meta.id);
+    const level = Number(meta.level);
+    const serverSum = getRescueServerCodeSum(meta.server);
+    const keyA = Number(saltA);
+    const keyB = Number(saltB);
+    if (
+      !funcs ||
+      !Number.isFinite(gameId) ||
+      !Number.isFinite(level) ||
+      !Number.isFinite(keyA) ||
+      !Number.isFinite(keyB)
+    ) {
+      return null;
+    }
+    const firstIndex = (gameId + level * width + rescueSiteKeySeed(gameId, level, width, height, mines, serverSum)) % 9;
+    const secondIndex =
+      (2 * gameId + height * mines + rescueSiteKeySeed(mines, height, width, level, gameId, serverSum)) % 9;
+    const firstFn = funcs[firstIndex];
+    const secondFn = funcs[secondIndex];
+    let previous;
+    return function rescueLpeKey(x, y) {
+      const raw =
+        previous < 200
+          ? keyB + (Number(firstFn(x, y)) % 9)
+          : keyA + (Number(secondFn(y, x)) % 33);
+      previous = raw;
+      return raw;
+    };
+  }
+
+  function decodeRescueLpeTypes(globalObj, meta, encoded, width, height, mines, saltA, saltB) {
+    if (!meta || !meta.lpe || typeof encoded !== "string") return null;
+    const length = width * height;
+    const gameId = Number(meta.id);
+    const prefixLength = Math.trunc(((gameId % 1000) / 300) * length);
+    if (!Number.isFinite(prefixLength) || prefixLength < 0 || encoded.length < prefixLength + length) return null;
+    const keyFn = createRescueLpeKeyFunction(globalObj, meta, width, height, mines, saltA, saltB);
+    if (!keyFn) return null;
+    const types = new Array(length);
+    for (let x = 0; x < width; x += 1) {
+      for (let y = 0; y < height; y += 1) {
+        const index = x * height + y;
+        const encodedIndex = prefixLength + length - (index + 1);
+        const firstKey = keyFn(x, y);
+        const secondKey = keyFn(y, x);
+        const encodedValue = encoded.charCodeAt(encodedIndex);
+        const value = (-1 * x * y * firstKey) % secondKey + encodedValue;
+        if (!Number.isInteger(value) || value < 0 || value > RESCUE_MINE_VALUE) return null;
+        types[index] = value;
+      }
+    }
+    return types;
+  }
+
+  function createUnavailableRescueSource(state, meta, width, height, mines, reason) {
+    const gameId = normalizeRescueGameId(meta && meta.id);
+    if (!state || !gameId) return null;
+    const length = width * height;
+    const source = {
+      gameId,
+      width,
+      height,
+      mines,
+      types: new Array(length).fill(0),
+      opened: new Array(length).fill(0),
+      flags: new Array(length).fill(0),
+      hasOpened: false,
+      trusted: false,
+      available: false,
+      reason,
+      lastMarkedKey: null,
+      updatedAt: Date.now(),
+    };
+    state.boards[gameId] = source;
+    state.currentGameId = gameId;
+    return source;
+  }
+
   function captureRescueGameInit(state, args) {
     if (!state || !Array.isArray(args) || !isRescueGameMeta(args[0])) return null;
     const meta = args[0];
@@ -161,12 +267,28 @@
     const mines = Number(meta.mines);
     const length = width * height;
     const payload = args[1];
-    if (!isRescueBoardPayload(payload, length)) return null;
+    if (!isRescueBoardPayload(payload, length)) {
+      return createUnavailableRescueSource(state, meta, width, height, mines, "答案包格式不支持");
+    }
 
-    const types = readIndexedNumericArray(payload.t, length);
+    let types = readIndexedNumericArray(payload.t, length);
     const opened = readIndexedNumericArray(payload.o, length);
     const flags = readIndexedNumericArray(payload.f, length);
     if (!types || !opened || !flags) return null;
+    const decodeGlobalObj = state.globalObj || (typeof globalThis !== "undefined" ? globalThis : null);
+    const decodedTypes = decodeRescueLpeTypes(
+      decodeGlobalObj,
+      meta,
+      args[5],
+      width,
+      height,
+      mines,
+      args[8],
+      args[9]
+    );
+    if (decodedTypes && countRescueMines(decodedTypes) === mines) {
+      types = decodedTypes;
+    }
 
     const mineCount = countRescueMines(types);
     const gameId = normalizeRescueGameId(meta.id);
@@ -181,7 +303,7 @@
       hasOpened: opened.some(Boolean),
       trusted: true,
       available: mineCount === mines,
-      reason: mineCount === mines ? "" : "雷图尚未明文可用",
+      reason: mineCount === mines ? "" : meta.lpe ? "加密雷图未解码" : "雷图尚未明文可用",
       lastMarkedKey: null,
       updatedAt: Date.now(),
     };
@@ -515,6 +637,11 @@
   }
 
   function findMatchingRescueSource(globalObj, board) {
+    const status = getRescueSourceStatus(globalObj, board);
+    return status.ok ? status.source : null;
+  }
+
+  function findRescueSourceCandidate(globalObj, board) {
     const state = globalObj && globalObj[RESCUE_STATE_KEY];
     if (!state || !state.boards || !board) return null;
     const preferred = getCurrentPageGameId(globalObj) || state.currentGameId;
@@ -523,20 +650,21 @@
     for (const source of Object.values(state.boards)) {
       if (!candidates.includes(source)) candidates.push(source);
     }
-    return (
-      candidates.find(
-        (source) =>
-          source &&
-          source.width === board.width &&
-          source.height === board.height &&
-          source.trusted &&
-          source.available
-      ) || null
-    );
+    return candidates.find((source) => source && source.width === board.width && source.height === board.height) || null;
+  }
+
+  function getRescueSourceStatus(globalObj, board) {
+    if (!board) return { ok: false, source: null, reason: "未检测到棋盘" };
+    const source = findRescueSourceCandidate(globalObj, board);
+    if (!source) return { ok: false, source: null, reason: "未捕获到当前局答案源，请刷新页面后重新开局" };
+    if (!source.trusted) return { ok: false, source, reason: source.reason || "答案源未通过安全校验" };
+    if (!source.available) return { ok: false, source, reason: source.reason || "答案源暂不可用" };
+    return { ok: true, source, reason: "" };
   }
 
   function getCurrentRescueGameKey(globalObj, board) {
-    const source = findMatchingRescueSource(globalObj, board);
+    const status = getRescueSourceStatus(globalObj, board);
+    const source = status.source;
     return (
       (source && source.gameId) ||
       getCurrentPageGameId(globalObj) ||
@@ -2719,8 +2847,8 @@
       if (observer) observer.disconnect();
     }
 
-    function getRescueSource() {
-      return findMatchingRescueSource(globalObj, latestBoard);
+    function getRescueSourceStatusForBoard() {
+      return getRescueSourceStatus(globalObj, latestBoard);
     }
 
     function getRescueGameKey() {
@@ -2743,13 +2871,14 @@
       const gameKey = getRescueGameKey();
       const usage = loadRescueUsage(salt, gameKey, store);
       const remaining = getRescueRemaining(usage);
-      const source = getRescueSource();
+      const sourceStatus = getRescueSourceStatusForBoard();
+      const source = sourceStatus.source;
       const target = findRescueMarkedTarget(latestBoard, latestResult, getRescueTargetSource(source));
       button.textContent = `救援 ${remaining}/${RESCUE_LIMIT}`;
 
       let reason = "";
       if (!latestBoard || !latestResult) reason = "未检测到棋盘";
-      else if (!source) reason = "当前局没有可用答案源";
+      else if (!sourceStatus.ok) reason = sourceStatus.reason;
       else if (target.count === 0) reason = "先临时插旗标记一个死猜格";
       else if (!target.cell) reason = "只保留一个救援标记";
       else if (hasDeterministicConclusionForCell(latestResult, target.cell)) reason = "标记格已有确定结论";
@@ -2857,9 +2986,10 @@
         return;
       }
 
-      const source = getRescueSource();
-      if (!source) {
-        updateStatus(panel, latestBoard, latestResult, "当前局没有可用答案源");
+      const sourceStatus = getRescueSourceStatusForBoard();
+      const source = sourceStatus.source;
+      if (!sourceStatus.ok) {
+        updateStatus(panel, latestBoard, latestResult, sourceStatus.reason);
         updateRescueButton();
         return;
       }
@@ -2891,7 +3021,7 @@
 
       const answer = getRescueAnswerFromSource(source, targetCell.key);
       if (!answer) {
-        updateStatus(panel, latestBoard, latestResult, "当前局没有可用答案源");
+        updateStatus(panel, latestBoard, latestResult, "目标格答案不可用");
         updateRescueButton();
         return;
       }
@@ -3018,10 +3148,13 @@
       captureRescueSocketResponse,
       captureRescueTouchUpdate,
       createPanel,
+      createRescueLpeKeyFunction,
       createRescueState,
+      decodeRescueLpeTypes,
       estimateProbabilities,
       findRescueMarkedTarget,
       findMatchingRescueSource,
+      findRescueSourceCandidate,
       formatExplanation,
       formatExplanationHtml,
       getAllHighlightClasses,
@@ -3030,6 +3163,7 @@
       getInstallSalt,
       getRescueAnswerFromSource,
       getRescueRemaining,
+      getRescueSourceStatus,
       getRescueState,
       getRescueStorageKey,
       getStorageKey,

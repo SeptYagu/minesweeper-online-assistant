@@ -329,6 +329,59 @@ function makeFakeDoc() {
 }
 
 {
+  const fakeWindow = {};
+  fakeWindow.$abc = Array.from({ length: 9 }, () => () => 0);
+  const state = core._private.getRescueState(fakeWindow);
+  const meta = { id: 123, sizeX: 2, sizeY: 2, mines: 1, level: 1, server: "", lpe: "abc" };
+  const types = [0, 10, 1, 0];
+  const prefixLength = Math.trunc(((Number(meta.id) % 1000) / 300) * types.length);
+  const encodedChars = new Array(prefixLength + types.length).fill("x");
+  for (let i = 0; i < types.length; i += 1) {
+    encodedChars[prefixLength + types.length - (i + 1)] = String.fromCharCode(types[i]);
+  }
+  const source = core._private.captureRescueGameInit(state, [
+    meta,
+    { t: [0, 0, 0, 0], o: [0, 0, 0, 0], f: [0, 0, 0, 0] },
+    [],
+    [],
+    null,
+    encodedChars.join(""),
+    0,
+    0,
+    0,
+    13,
+  ]);
+  assert.equal(source.available, true);
+  assert.equal(source.reason, "");
+  assert.deepEqual(JSON.parse(JSON.stringify(source.types)), types);
+  assert.equal(core._private.getRescueSourceStatus(fakeWindow, { width: 2, height: 2 }).ok, true);
+}
+
+{
+  const fakeWindow = {};
+  const state = core._private.getRescueState(fakeWindow);
+  const source = core._private.captureRescueGameInit(state, [
+    { id: 78, sizeX: 2, sizeY: 2, mines: 1, level: 1, server: "", lpe: "missing" },
+    { t: [0, 0, 0, 0], o: [0, 0, 0, 0], f: [0, 0, 0, 0] },
+    [],
+    [],
+    null,
+    "xxxx",
+    0,
+    0,
+    0,
+    13,
+  ]);
+  const status = core._private.getRescueSourceStatus(fakeWindow, { width: 2, height: 2 });
+  assert.equal(source.available, false);
+  assert.equal(core._private.findRescueSourceCandidate(fakeWindow, { width: 2, height: 2 }), source);
+  assert.equal(core._private.findMatchingRescueSource(fakeWindow, { width: 2, height: 2 }), null);
+  assert.equal(status.ok, false);
+  assert.equal(status.reason, "加密雷图未解码");
+  assert.match(core._private.getRescueSourceStatus({}, { width: 2, height: 2 }).reason, /未捕获/);
+}
+
+{
   const state = core._private.createRescueState();
   const source = core._private.captureRescueGameInit(state, [
     { id: 88, sizeX: 2, sizeY: 1, mines: 1 },
