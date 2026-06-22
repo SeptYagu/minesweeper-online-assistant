@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.3.3
+// @version      0.3.4
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,12 +16,14 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.3.3";
+  const ASSISTANT_VERSION = "0.3.4";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_SOURCE_STORAGE_PREFIX = "msah-rescue-source-v1:";
   const RESCUE_STATE_KEY = "__MSAH_RESCUE_STATE";
   const RESCUE_LIMIT = 3;
+  const RESCUE_BUTTON_READY_CLASS = "msah-rescue-source-ready";
+  const RESCUE_BUTTON_BLOCKED_CLASS = "msah-rescue-source-blocked";
   const RESCUE_MINE_VALUE = 10;
   const RESCUE_BOOM_VALUE = 11;
   const RESCUE_OPENED_VALUE = 12;
@@ -748,6 +750,12 @@
 
   function getRescueRemaining(usage) {
     return Math.max(0, RESCUE_LIMIT - Math.min(RESCUE_LIMIT, usage && usage.used ? usage.used : 0));
+  }
+
+  function getRescueButtonSourceState(sourceStatus, remaining) {
+    const ready = !!(sourceStatus && sourceStatus.ok) && remaining > 0;
+    const blocked = !(sourceStatus && sourceStatus.ok) || remaining <= 0;
+    return { ready, blocked };
   }
 
   function recordRescueUse(salt, gameKey, key, store) {
@@ -2493,6 +2501,26 @@
         cursor: not-allowed;
         opacity: 0.52;
       }
+      .msah-buttons button.${RESCUE_BUTTON_READY_CLASS} {
+        border-color: #16a34a;
+        background: #dcfce7;
+        color: #166534;
+      }
+      .msah-buttons button.${RESCUE_BUTTON_READY_CLASS}:hover {
+        background: #bbf7d0;
+      }
+      .msah-buttons button.${RESCUE_BUTTON_BLOCKED_CLASS} {
+        border-color: #dc2626;
+        background: #fee2e2;
+        color: #991b1b;
+      }
+      .msah-buttons button.${RESCUE_BUTTON_BLOCKED_CLASS}:hover {
+        background: #fecaca;
+      }
+      .msah-buttons button.${RESCUE_BUTTON_READY_CLASS}:disabled,
+      .msah-buttons button.${RESCUE_BUTTON_BLOCKED_CLASS}:disabled {
+        opacity: 1;
+      }
       .msah-options {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3061,7 +3089,14 @@
       const sourceStatus = getRescueSourceStatusForBoard();
       const source = sourceStatus.source;
       const target = findRescueMarkedTarget(latestBoard, latestResult, getRescueTargetSource(source));
+      const sourceState = getRescueButtonSourceState(sourceStatus, remaining);
       button.textContent = `救援 ${remaining}/${RESCUE_LIMIT}`;
+      if (button.classList) {
+        if (sourceState.ready) button.classList.add(RESCUE_BUTTON_READY_CLASS);
+        else button.classList.remove(RESCUE_BUTTON_READY_CLASS);
+        if (sourceState.blocked) button.classList.add(RESCUE_BUTTON_BLOCKED_CLASS);
+        else button.classList.remove(RESCUE_BUTTON_BLOCKED_CLASS);
+      }
 
       let reason = "";
       if (!latestBoard || !latestResult) reason = "未检测到棋盘";
@@ -3349,6 +3384,7 @@
       getHighlightForCell,
       getInstallSalt,
       getRescueAnswerFromSource,
+      getRescueButtonSourceState,
       getRescueRemaining,
       getRescueSourceCacheKey,
       getRescueSourceStatus,

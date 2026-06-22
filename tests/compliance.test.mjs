@@ -292,6 +292,21 @@ function makeFakeDoc() {
 }
 
 {
+  assert.deepEqual(JSON.parse(JSON.stringify(core._private.getRescueButtonSourceState({ ok: true }, 3))), {
+    ready: true,
+    blocked: false,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(core._private.getRescueButtonSourceState({ ok: false }, 3))), {
+    ready: false,
+    blocked: true,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(core._private.getRescueButtonSourceState({ ok: true }, 0))), {
+    ready: false,
+    blocked: true,
+  });
+}
+
+{
   const state = core._private.createRescueState();
   const source = core._private.captureRescueGameInit(state, [
     { id: 77, sizeX: 2, sizeY: 2, mines: 1 },
