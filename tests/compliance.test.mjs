@@ -396,7 +396,8 @@ function makeFakeDoc() {
   assert.equal(html.includes("data-msah-note"), true, "panel should keep a note block");
   assert.equal(html.includes("data-msah-option=\"explanations\""), true, "panel should include explanation toggle");
   assert.equal(html.includes("当前悬停格"), false, "rescue should no longer depend on hover targeting");
-  assert.equal(html.includes("问号标记"), true, "rescue should target a marked/question cell");
+  assert.equal(html.includes("问号标记"), false, "rescue copy should not rely on unavailable site question marks");
+  assert.equal(html.includes("临时旗标记"), true, "rescue should target a temporary flag mark");
   assert.equal(html.includes("aria-label"), false, "panel should not reference data-* label attributes");
 }
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.2.32
+// @version      0.2.33
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.2.32";
+  const ASSISTANT_VERSION = "0.2.33";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_STATE_KEY = "__MSAH_RESCUE_STATE";
@@ -2298,7 +2298,7 @@
         <div class="msah-buttons">
           <button type="button" data-msah-action="analyze" title="重新分析当前棋盘">分析</button>
           <button type="button" data-msah-action="clear" title="移除所有高亮">清除</button>
-          <button type="button" data-msah-action="rescue" title="仅在无确定结论时检查一个问号标记">救援 3/3</button>
+          <button type="button" data-msah-action="rescue" title="仅在无确定结论时检查一个临时旗标记">救援 3/3</button>
         </div>
         <div class="msah-options">
           <label title="棋盘变化后自动重新分析"><input type="checkbox" data-msah-option="auto"> 自动</label>
@@ -2736,12 +2736,12 @@
       if (!latestBoard || !latestResult) reason = "未检测到棋盘";
       else if (!isDeadGuessCandidate(latestResult, latestBoard)) reason = "当前还有确定结论";
       else if (!source) reason = "当前局没有可用答案源";
-      else if (target.count === 0) reason = "先用问号标记一个死猜格";
-      else if (!target.cell) reason = "只保留一个救援问号";
+      else if (target.count === 0) reason = "先临时插旗标记一个死猜格";
+      else if (!target.cell) reason = "只保留一个救援标记";
       else if (remaining <= 0) reason = "本局救援次数已用完";
 
       button.disabled = !!reason;
-      button.title = reason || "只检查当前问号标记的一个格";
+      button.title = reason || "只检查当前临时旗标记的一个格";
     }
 
     function attachObserver() {
@@ -2847,12 +2847,12 @@
       const target = findRescueMarkedTarget(latestBoard, latestResult, source);
       const targetCell = target.cell;
       if (target.count === 0) {
-        updateStatus(panel, latestBoard, latestResult, "先用问号标记一个死猜格");
+        updateStatus(panel, latestBoard, latestResult, "先临时插旗标记一个死猜格");
         updateRescueButton();
         return;
       }
       if (!targetCell) {
-        updateStatus(panel, latestBoard, latestResult, "只保留一个救援问号");
+        updateStatus(panel, latestBoard, latestResult, "只保留一个救援标记");
         updateRescueButton();
         return;
       }
