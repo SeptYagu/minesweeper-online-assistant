@@ -380,6 +380,24 @@ function fakeCell(id) {
     true,
     "question-marked cells should remain solver candidates"
   );
+  {
+    const withKnownMine = solve(
+      [c(0, 0, "closed"), c(1, 0, "open", 1), c(2, 0, "closed")],
+      {},
+      { knownMines: ["0,0"] }
+    );
+    assert.equal(withKnownMine.mineKeys.has("0,0"), true, "trusted rescue mine should enter solver mine keys");
+    assert.equal(withKnownMine.safeKeys.has("2,0"), true, "trusted rescue mine should reduce neighboring counts");
+  }
+  {
+    const withKnownSafe = solve(
+      [c(0, 0, "closed"), c(1, 0, "open", 1), c(2, 0, "closed")],
+      {},
+      { knownSafe: ["0,0"] }
+    );
+    assert.equal(withKnownSafe.safeKeys.has("0,0"), true, "trusted rescue safe should enter solver safe keys");
+    assert.equal(withKnownSafe.mineKeys.has("2,0"), true, "trusted rescue safe should leave the remaining neighbor as mine");
+  }
   assert.equal(core._private.isDeadGuessCandidate(result), false);
   assert.equal(
     core._private.isDeadGuessCandidate(

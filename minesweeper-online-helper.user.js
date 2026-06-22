@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.3.10
+// @version      0.3.11
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.3.10";
+  const ASSISTANT_VERSION = "0.3.11";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_SOURCE_STORAGE_PREFIX = "msah-rescue-source-v1:";
@@ -2143,8 +2143,10 @@
 
   function solveBoard(rawBoard, options = {}) {
     const board = normalizeBoard(rawBoard);
-    const inferredMines = new Set();
-    const inferredSafe = new Set();
+    const inferredMines = new Set(Array.isArray(options.knownMines) ? options.knownMines : []);
+    const inferredSafe = new Set(
+      (Array.isArray(options.knownSafe) ? options.knownSafe : []).filter((key) => !inferredMines.has(key))
+    );
     const explanations = new Map();
     const maxIterations = options.maxIterations ?? 24;
     const maxDerived = options.maxDerived ?? 1200;
@@ -3490,6 +3492,11 @@
       }
     }
 
+    function solveBoardWithRescueHint(board, hint = rescueHint) {
+      if (!hint || !hint.key || !getClosedBoardCell(board, hint.key)) return solveBoard(board);
+      return solveBoard(board, hint.isMine ? { knownMines: [hint.key] } : { knownSafe: [hint.key] });
+    }
+
     function updateRescueButton() {
       const button = panel.querySelector("[data-msah-action='rescue']");
       if (!button) return;
@@ -3567,6 +3574,7 @@
         pendingMarkedKey = null;
       }
       pruneRescueHint();
+      if (rescueHint) latestResult = solveBoardWithRescueHint(latestBoard, rescueHint);
       renderHighlights(latestBoard, latestResult, settings, doc, salt, rescueHint);
       updateExplanation(panel, null);
       updateStatus(panel, latestBoard, latestResult, note);
@@ -3667,6 +3675,7 @@
       }
 
       rescueHint = answer;
+      latestResult = solveBoardWithRescueHint(latestBoard, rescueHint);
       renderHighlights(latestBoard, latestResult, settings, doc, salt, rescueHint);
       updateStatus(
         panel,
