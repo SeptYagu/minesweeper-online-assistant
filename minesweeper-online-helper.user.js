@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.2.35
+// @version      0.2.36
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.2.35";
+  const ASSISTANT_VERSION = "0.2.36";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_STATE_KEY = "__MSAH_RESCUE_STATE";
@@ -25,6 +25,8 @@
   const RESCUE_BOOM_VALUE = 11;
   const RESCUE_OPENED_VALUE = 12;
   const RESCUE_CLOSED_VALUE = 13;
+  const RESCUE_FLAGGED_TYPE_MASK = 16;
+  const RESCUE_OPENED_TYPE_MASK = 32;
   const GAME_LEFT_CLICK = 0;
   const SALT_LENGTH = 8;
   const DEFAULT_MAX_EXACT_CELLS = 18;
@@ -133,6 +135,20 @@
     return out;
   }
 
+  function normalizeRescueTypeValue(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return 0;
+    let type = Math.trunc(number);
+    if (type >= RESCUE_OPENED_TYPE_MASK) type -= RESCUE_OPENED_TYPE_MASK;
+    if (type >= RESCUE_FLAGGED_TYPE_MASK) type -= RESCUE_FLAGGED_TYPE_MASK;
+    return type;
+  }
+
+  function readRescueTypeArray(value, length) {
+    const values = readIndexedNumericArray(value, length);
+    return values ? values.map(normalizeRescueTypeValue) : null;
+  }
+
   function isRescueGameMeta(value) {
     return (
       value &&
@@ -150,12 +166,50 @@
       value.o &&
       value.f &&
       value.t.length !== 0 &&
-      readIndexedNumericArray(value.t, length) !== null
+      readRescueTypeArray(value.t, length) !== null
     );
   }
 
   function countRescueMines(types) {
     return types.filter((value) => value === RESCUE_MINE_VALUE).length;
+  }
+
+  function isCompleteRescueType(value) {
+    return (Number.isInteger(value) && value >= 0 && value <= 8) || value === RESCUE_MINE_VALUE;
+  }
+
+  function formatRescueSourceReason(reason, mineCount, mines) {
+    return `${reason}（已识别 ${mineCount}/${mines} 雷）`;
+  }
+
+  function updateRescueSourceAvailability(source, reason = "雷图尚未明文可用") {
+    if (!source || !source.trusted) return source;
+    const mineCount = countRescueMines(source.types);
+    const complete = source.types.every(isCompleteRescueType);
+    source.available = mineCount === source.mines && complete;
+    source.reason = source.available ? "" : formatRescueSourceReason(reason, mineCount, source.mines);
+    source.updatedAt = Date.now();
+    return source;
+  }
+
+  function refreshRescueSource(globalObj, source) {
+    if (!source || !source.trusted || source.available) return source;
+    if (source.lpe) {
+      const decodedTypes = decodeRescueLpeTypes(
+        globalObj,
+        source.lpe.meta,
+        source.lpe.encoded,
+        source.width,
+        source.height,
+        source.mines,
+        source.lpe.saltA,
+        source.lpe.saltB
+      );
+      if (decodedTypes && countRescueMines(decodedTypes) === source.mines) {
+        source.types = decodedTypes;
+      }
+    }
+    return updateRescueSourceAvailability(source, source.unavailableReason || "雷图尚未明文可用");
   }
 
   function rescueSiteKeySeed(e, i, a, r, l, p) {
@@ -251,6 +305,7 @@
       trusted: false,
       available: false,
       reason,
+      unavailableReason: reason,
       lastMarkedKey: null,
       updatedAt: Date.now(),
     };
@@ -271,7 +326,7 @@
       return createUnavailableRescueSource(state, meta, width, height, mines, "答案包格式不支持");
     }
 
-    let types = readIndexedNumericArray(payload.t, length);
+    let types = readRescueTypeArray(payload.t, length);
     const opened = readIndexedNumericArray(payload.o, length);
     const flags = readIndexedNumericArray(payload.f, length);
     if (!types || !opened || !flags) return null;
@@ -290,7 +345,6 @@
       types = decodedTypes;
     }
 
-    const mineCount = countRescueMines(types);
     const gameId = normalizeRescueGameId(meta.id);
     const source = {
       gameId,
@@ -302,11 +356,22 @@
       flags,
       hasOpened: opened.some(Boolean),
       trusted: true,
-      available: mineCount === mines,
-      reason: mineCount === mines ? "" : meta.lpe ? "加密雷图未解码" : "雷图尚未明文可用",
+      available: false,
+      reason: "",
+      unavailableReason: meta.lpe ? "加密雷图未解码" : "雷图尚未明文可用",
+      lpe:
+        meta.lpe && typeof args[5] === "string"
+          ? {
+              meta,
+              encoded: args[5],
+              saltA: args[8],
+              saltB: args[9],
+            }
+          : null,
       lastMarkedKey: null,
       updatedAt: Date.now(),
     };
+    updateRescueSourceAvailability(source, source.unavailableReason);
     state.boards[gameId] = source;
     state.currentGameId = gameId;
     return source;
@@ -332,7 +397,7 @@
       }
       const index = x * source.height + y;
       const previousFlagged = !!source.flags[index];
-      source.types[index] = Number.isFinite(type) ? type : source.types[index];
+      source.types[index] = Number.isFinite(type) ? normalizeRescueTypeValue(type) : source.types[index];
       source.opened[index] = Number.isFinite(opened) ? opened : source.opened[index];
       source.flags[index] = Number.isFinite(flagged) ? flagged : source.flags[index];
       if (!previousFlagged && source.flags[index]) {
@@ -344,7 +409,7 @@
     }
     if (changed) {
       source.hasOpened = source.opened.some(Boolean);
-      source.updatedAt = Date.now();
+      updateRescueSourceAvailability(source, source.unavailableReason || "雷图尚未明文可用");
     }
     return changed;
   }
@@ -657,6 +722,7 @@
     if (!board) return { ok: false, source: null, reason: "未检测到棋盘" };
     const source = findRescueSourceCandidate(globalObj, board);
     if (!source) return { ok: false, source: null, reason: "未捕获到当前局答案源，请刷新页面后重新开局" };
+    refreshRescueSource(globalObj, source);
     if (!source.trusted) return { ok: false, source, reason: source.reason || "答案源未通过安全校验" };
     if (!source.available) return { ok: false, source, reason: source.reason || "答案源暂不可用" };
     return { ok: true, source, reason: "" };
@@ -677,7 +743,7 @@
     const point = parseKey(key);
     if (!Number.isInteger(point.x) || !Number.isInteger(point.y)) return null;
     if (point.x < 0 || point.y < 0 || point.x >= source.width || point.y >= source.height) return null;
-    const value = source.types[point.x * source.height + point.y];
+    const value = normalizeRescueTypeValue(source.types[point.x * source.height + point.y]);
     if (value === RESCUE_MINE_VALUE) return { key, isMine: true };
     if (Number.isInteger(value) && value >= 0 && value <= 8) return { key, isMine: false };
     return null;
@@ -3182,12 +3248,14 @@
       loadRescueUsage,
       migrateSettings,
       normalizeBoard,
+      normalizeRescueTypeValue,
       readBoardFromDom,
       readRemainingMinesFromDom,
       readTotalMinesFromDom,
       relativeCellName,
       renderHighlights,
       renderExplanationHighlights,
+      refreshRescueSource,
       saveSettings,
       recordRescueUse,
       saveRescueUsage,

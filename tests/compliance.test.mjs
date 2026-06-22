@@ -358,15 +358,46 @@ function makeFakeDoc() {
 }
 
 {
+  const state = core._private.createRescueState();
+  const source = core._private.captureRescueGameInit(state, [
+    { id: 79, sizeX: 2, sizeY: 1, mines: 1 },
+    { t: [42, 0], o: [1, 0], f: [0, 0] },
+  ]);
+  assert.equal(source.available, true);
+  assert.equal(source.types[0], 10);
+  assert.equal(core._private.getRescueAnswerFromSource(source, "0,0").isMine, true);
+}
+
+{
+  const state = core._private.createRescueState();
+  const source = core._private.captureRescueGameInit(state, [
+    { id: 80, sizeX: 2, sizeY: 1, mines: 1 },
+    { t: [0, 0], o: [0, 0], f: [0, 0] },
+  ]);
+  assert.equal(source.available, false);
+  assert.match(source.reason, /已识别 0\/1 雷/);
+  core._private.applyRescueTouchCells(source, [1, 0, 10, 0, 0]);
+  assert.equal(source.available, true);
+  assert.equal(source.reason, "");
+}
+
+{
   const fakeWindow = {};
   const state = core._private.getRescueState(fakeWindow);
+  const meta = { id: 78, sizeX: 2, sizeY: 2, mines: 1, level: 1, server: "", lpe: "missing" };
+  const types = [0, 10, 1, 0];
+  const prefixLength = Math.trunc(((Number(meta.id) % 1000) / 300) * types.length);
+  const encodedChars = new Array(prefixLength + types.length).fill("x");
+  for (let i = 0; i < types.length; i += 1) {
+    encodedChars[prefixLength + types.length - (i + 1)] = String.fromCharCode(types[i]);
+  }
   const source = core._private.captureRescueGameInit(state, [
-    { id: 78, sizeX: 2, sizeY: 2, mines: 1, level: 1, server: "", lpe: "missing" },
+    meta,
     { t: [0, 0, 0, 0], o: [0, 0, 0, 0], f: [0, 0, 0, 0] },
     [],
     [],
     null,
-    "xxxx",
+    encodedChars.join(""),
     0,
     0,
     0,
@@ -377,8 +408,12 @@ function makeFakeDoc() {
   assert.equal(core._private.findRescueSourceCandidate(fakeWindow, { width: 2, height: 2 }), source);
   assert.equal(core._private.findMatchingRescueSource(fakeWindow, { width: 2, height: 2 }), null);
   assert.equal(status.ok, false);
-  assert.equal(status.reason, "加密雷图未解码");
+  assert.match(status.reason, /加密雷图未解码/);
   assert.match(core._private.getRescueSourceStatus({}, { width: 2, height: 2 }).reason, /未捕获/);
+  fakeWindow.$missing = Array.from({ length: 9 }, () => () => 0);
+  const recoveredStatus = core._private.getRescueSourceStatus(fakeWindow, { width: 2, height: 2 });
+  assert.equal(recoveredStatus.ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(source.types)), types);
 }
 
 {
