@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.3.5
+// @version      0.3.6
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.3.5";
+  const ASSISTANT_VERSION = "0.3.6";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_SOURCE_STORAGE_PREFIX = "msah-rescue-source-v1:";
@@ -286,6 +286,55 @@
     return source;
   }
 
+  function getRescueSourceBoardCompatibility(source, board) {
+    if (
+      !source ||
+      !board ||
+      !source.types ||
+      source.types.length !== source.width * source.height ||
+      source.width !== board.width ||
+      source.height !== board.height
+    ) {
+      return { compatible: false, matched: 0 };
+    }
+    if (Number.isInteger(board.totalMines) && board.totalMines !== source.mines) {
+      return { compatible: false, matched: 0 };
+    }
+    let matched = 0;
+    for (const cell of board.cells || []) {
+      if (cell.state !== "open" || !Number.isInteger(cell.number) || cell.number < 0 || cell.number > 8) {
+        continue;
+      }
+      const value = normalizeRescueTypeValue(source.types[cell.x * source.height + cell.y]);
+      if (value !== cell.number) return { compatible: false, matched };
+      matched += 1;
+    }
+    return { compatible: matched > 0, matched };
+  }
+
+  function shouldPreserveLossRevealedSource(existing, nextSource) {
+    return !!(
+      existing &&
+      existing.available &&
+      existing.revealedByLoss &&
+      nextSource &&
+      existing.gameId === nextSource.gameId &&
+      existing.width === nextSource.width &&
+      existing.height === nextSource.height &&
+      existing.mines === nextSource.mines &&
+      !nextSource.available
+    );
+  }
+
+  function preserveLossRevealedSource(existing, nextSource) {
+    existing.opened = nextSource.opened;
+    existing.flags = nextSource.flags;
+    existing.hasOpened = nextSource.hasOpened;
+    existing.lastMarkedKey = nextSource.lastMarkedKey || existing.lastMarkedKey || null;
+    existing.updatedAt = Date.now();
+    return existing;
+  }
+
   function refreshRescueSource(globalObj, source) {
     if (!source || !source.trusted || source.available) return source;
     if (source.lpe) {
@@ -468,6 +517,11 @@
       updatedAt: Date.now(),
     };
     updateRescueSourceAvailability(source, source.unavailableReason);
+    const existing = state.boards[gameId];
+    if (shouldPreserveLossRevealedSource(existing, source)) {
+      state.currentGameId = gameId;
+      return preserveLossRevealedSource(existing, source);
+    }
     state.boards[gameId] = source;
     state.currentGameId = gameId;
     return source;
@@ -832,6 +886,18 @@
     return status.ok ? status.source : null;
   }
 
+  function rankRescueSourceForBoard(source, board, preferred) {
+    if (!source || !board || source.width !== board.width || source.height !== board.height) return -1;
+    const sameGame = !!(preferred && source.gameId === preferred);
+    if (sameGame && source.available) return 10000;
+    const compatibility = getRescueSourceBoardCompatibility(source, board);
+    if (source.available && source.revealedByLoss && compatibility.compatible && compatibility.matched >= 2) {
+      return 9000 + compatibility.matched;
+    }
+    if (sameGame) return 100;
+    return -1;
+  }
+
   function findRescueSourceCandidate(globalObj, board) {
     const state = getRescueState(globalObj);
     if (!state || !state.boards || !board) return null;
@@ -853,7 +919,12 @@
     for (const source of Object.values(state.boards)) {
       if (!candidates.includes(source)) candidates.push(source);
     }
-    return candidates.find((source) => source && source.width === board.width && source.height === board.height) || null;
+    return (
+      candidates
+        .map((source) => ({ source, rank: rankRescueSourceForBoard(source, board, preferred) }))
+        .filter((entry) => entry.rank >= 0)
+        .sort((a, b) => b.rank - a.rank)[0]?.source || null
+    );
   }
 
   function getRescueSourceStatus(globalObj, board) {
@@ -3396,6 +3467,7 @@
       getRescueAnswerFromSource,
       getRescueButtonSourceState,
       getRescueRemaining,
+      getRescueSourceBoardCompatibility,
       getRescueSourceCacheKey,
       getRescueSourceStatus,
       getRescueState,

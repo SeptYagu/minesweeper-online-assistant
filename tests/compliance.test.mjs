@@ -446,6 +446,14 @@ function makeFakeDoc() {
   assert.equal(restoredSamePageStatus.ok, true, "same-game cache should take priority over stale unavailable state");
   assert.equal(restoredSamePageStatus.source.restoredFromCache, true);
 
+  const preserved = core._private.captureRescueGameInit(state, [
+    { id: 82, sizeX: 2, sizeY: 2, mines: 2 },
+    { t: [0, 0, 0, 0], o: [1, 0, 0, 0], f: [0, 0, 0, 0] },
+  ]);
+  assert.equal(preserved.available, true, "same-game rollback init should preserve a loss-revealed mine map");
+  assert.equal(preserved.revealedByLoss, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(preserved.types)), [10, 0, 0, 10]);
+
   const reloadedWindow = {
     localStorage: store,
     location: { pathname: "/game/82" },
@@ -457,6 +465,47 @@ function makeFakeDoc() {
     key: "1,1",
     isMine: true,
   });
+}
+
+{
+  const fakeWindow = {
+    location: { pathname: "/game/84" },
+  };
+  const state = core._private.getRescueState(fakeWindow);
+  const lossSource = core._private.captureRescueGameInit(state, [
+    { id: 83, sizeX: 2, sizeY: 2, mines: 1 },
+    { t: [1, 10, 1, 0], o: [1, 0, 1, 0], f: [0, 0, 0, 0] },
+  ]);
+  lossSource.revealedByLoss = true;
+  core._private.captureRescueGameInit(state, [
+    { id: 84, sizeX: 2, sizeY: 2, mines: 1 },
+    { t: [0, 0, 0, 0], o: [1, 0, 1, 0], f: [0, 0, 0, 0] },
+  ]);
+  const compatibleBoard = core._private.normalizeBoard({
+    totalMines: 1,
+    cells: [
+      { x: 0, y: 0, state: "open", number: 1 },
+      { x: 0, y: 1, state: "closed", number: null },
+      { x: 1, y: 0, state: "open", number: 1 },
+      { x: 1, y: 1, state: "closed", number: null },
+    ],
+  });
+  const compatibleStatus = core._private.getRescueSourceStatus(fakeWindow, compatibleBoard);
+  assert.equal(compatibleStatus.ok, true, "compatible loss source should outrank current unavailable source");
+  assert.equal(compatibleStatus.source.gameId, "83");
+
+  const incompatibleBoard = core._private.normalizeBoard({
+    totalMines: 1,
+    cells: [
+      { x: 0, y: 0, state: "open", number: 2 },
+      { x: 0, y: 1, state: "closed", number: null },
+      { x: 1, y: 0, state: "open", number: 1 },
+      { x: 1, y: 1, state: "closed", number: null },
+    ],
+  });
+  const incompatibleStatus = core._private.getRescueSourceStatus(fakeWindow, incompatibleBoard);
+  assert.equal(incompatibleStatus.ok, false, "incompatible old source should not be used");
+  assert.equal(incompatibleStatus.source.gameId, "84");
 }
 
 {
