@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.3.9
+// @version      0.3.10
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.3.9";
+  const ASSISTANT_VERSION = "0.3.10";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_SOURCE_STORAGE_PREFIX = "msah-rescue-source-v1:";
@@ -585,8 +585,13 @@
       if (cell.state !== "open" || !Number.isInteger(cell.number) || cell.number < 0 || cell.number > 8) {
         continue;
       }
-      const value = normalizeRescueTypeValue(source.types[cell.x * source.height + cell.y]);
-      if (value !== cell.number) return { compatible: false, matched };
+      const index = cell.x * source.height + cell.y;
+      const value = normalizeRescueTypeValue(source.types[index]);
+      if (value === RESCUE_MINE_VALUE) return { compatible: false, matched };
+      const sourceOpened = Array.isArray(source.opened) && !!source.opened[index];
+      // Loss-revealed sources are reliable for mine-vs-safe on previously closed cells,
+      // but their safe-cell numbers can be placeholders until the continued game opens them.
+      if (sourceOpened && value !== cell.number) return { compatible: false, matched };
       matched += 1;
     }
     return { compatible: true, matched };

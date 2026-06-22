@@ -580,6 +580,23 @@ function makeFakeDoc() {
   assert.equal(afterFlagStatus.ok, true, "continued source should survive temporary flag updates on the new game id");
   assert.equal(afterFlagStatus.source.gameId, "90");
 
+  const afterRescueSafeOpenBoard = core._private.normalizeBoard({
+    totalMines: 1,
+    cells: [
+      { x: 0, y: 0, state: "open", number: 1 },
+      { x: 0, y: 1, state: "closed", number: null },
+      { x: 1, y: 0, state: "open", number: 1 },
+      { x: 1, y: 1, state: "open", number: 1 },
+    ],
+  });
+  const afterRescueSafeOpenStatus = core._private.getRescueSourceStatus(fakeWindow, afterRescueSafeOpenBoard);
+  assert.equal(
+    afterRescueSafeOpenStatus.ok,
+    true,
+    "continued source should survive opening a rescue-safe cell whose number was not in the loss source"
+  );
+  assert.equal(afterRescueSafeOpenStatus.source.gameId, "90");
+
   const incompatibleContinuedBoard = core._private.normalizeBoard({
     totalMines: 1,
     cells: [
