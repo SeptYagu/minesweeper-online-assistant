@@ -340,9 +340,23 @@ function fakeCell(id) {
   const targetBoard = core._private.normalizeBoard({
     cells: [c(0, 0, "closed"), c(1, 0, "flag"), c(2, 0, "flag")],
   });
+  assert.equal(core._private.hasDeterministicConclusionForCell(result, "1,0"), true);
+  assert.equal(core._private.hasDeterministicConclusionForCell(result, "2,0"), false);
   assert.equal(
     core._private.findRescueMarkedTarget(targetBoard, { ...result, mineKeys: new Set(["1,0"]) }).cell.key,
     "2,0"
+  );
+  assert.equal(
+    core._private.hasDeterministicConclusionForCell(
+      { safeKeys: new Set(["0,0"]), mineKeys: new Set(["1,0"]) },
+      core._private.findRescueMarkedTarget(
+        targetBoard,
+        { safeKeys: new Set(["0,0"]), mineKeys: new Set(["1,0"]) },
+        { lastMarkedKey: "2,0" }
+      ).cell
+    ),
+    false,
+    "unrelated deterministic cells should not make the marked rescue target deterministic"
   );
   assert.equal(
     core._private.findRescueMarkedTarget(

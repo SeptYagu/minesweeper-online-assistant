@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minesweeper Online Assistant
 // @namespace    https://minesweeper.online/
-// @version      0.2.33
+// @version      0.2.34
 // @description  Highlights guaranteed safe cells and guaranteed mines on minesweeper.online.
 // @author       Codex
 // @match        https://minesweeper.online/*
@@ -16,7 +16,7 @@
 (function () {
   "use strict";
 
-  const ASSISTANT_VERSION = "0.2.33";
+  const ASSISTANT_VERSION = "0.2.34";
   const STORAGE_KEY_SALT_LOOKUP = "__msah_salt";
   const STORAGE_KEY_LEGACY = "minesweeper-online-assistant-settings-v1";
   const RESCUE_STATE_KEY = "__MSAH_RESCUE_STATE";
@@ -477,6 +477,15 @@
 
   function isDeadGuessCandidate(result, board = null) {
     return !!result && !hasActionableDeterministicMove(result, board);
+  }
+
+  function hasDeterministicConclusionForCell(result, cellOrKey) {
+    const key = typeof cellOrKey === "string" ? cellOrKey : cellOrKey && cellOrKey.key;
+    return !!(
+      key &&
+      result &&
+      ((result.safeKeys && result.safeKeys.has(key)) || (result.mineKeys && result.mineKeys.has(key)))
+    );
   }
 
   function isRescueMarkedCell(cell, result) {
@@ -2703,6 +2712,8 @@
     let analysisVisible = true;
     let rescueHint = null;
     let latestRescueGameKey = null;
+    let pendingMarkedKey = null;
+    let recentMarkedKey = null;
 
     function detachObserver() {
       if (observer) observer.disconnect();
@@ -2714,6 +2725,10 @@
 
     function getRescueGameKey() {
       return getCurrentRescueGameKey(globalObj, latestBoard);
+    }
+
+    function getRescueTargetSource(source) {
+      return { lastMarkedKey: recentMarkedKey || (source && source.lastMarkedKey) || null };
     }
 
     function pruneRescueHint() {
@@ -2729,15 +2744,15 @@
       const usage = loadRescueUsage(salt, gameKey, store);
       const remaining = getRescueRemaining(usage);
       const source = getRescueSource();
-      const target = findRescueMarkedTarget(latestBoard, latestResult, source);
+      const target = findRescueMarkedTarget(latestBoard, latestResult, getRescueTargetSource(source));
       button.textContent = `救援 ${remaining}/${RESCUE_LIMIT}`;
 
       let reason = "";
       if (!latestBoard || !latestResult) reason = "未检测到棋盘";
-      else if (!isDeadGuessCandidate(latestResult, latestBoard)) reason = "当前还有确定结论";
       else if (!source) reason = "当前局没有可用答案源";
       else if (target.count === 0) reason = "先临时插旗标记一个死猜格";
       else if (!target.cell) reason = "只保留一个救援标记";
+      else if (hasDeterministicConclusionForCell(latestResult, target.cell)) reason = "标记格已有确定结论";
       else if (remaining <= 0) reason = "本局救援次数已用完";
 
       button.disabled = !!reason;
@@ -2767,6 +2782,8 @@
         latestResult = null;
         rescueHint = null;
         latestRescueGameKey = null;
+        pendingMarkedKey = null;
+        recentMarkedKey = null;
         clearHighlights(doc, salt);
         updateExplanation(panel, null);
         updateStatus(panel, null, null);
@@ -2779,7 +2796,14 @@
       const gameKey = getRescueGameKey();
       if (gameKey !== latestRescueGameKey) {
         rescueHint = null;
+        pendingMarkedKey = null;
+        recentMarkedKey = null;
         latestRescueGameKey = gameKey;
+      }
+      if (pendingMarkedKey && latestBoard.byKey) {
+        const pendingCell = latestBoard.byKey.get(pendingMarkedKey);
+        if (isRescueMarkedCell(pendingCell, latestResult)) recentMarkedKey = pendingMarkedKey;
+        pendingMarkedKey = null;
       }
       pruneRescueHint();
       renderHighlights(latestBoard, latestResult, settings, doc, salt, rescueHint);
@@ -2809,6 +2833,8 @@
       latestResult = null;
       rescueHint = null;
       latestRescueGameKey = null;
+      pendingMarkedKey = null;
+      recentMarkedKey = null;
       updateExplanation(panel, null);
       const status = panel.querySelector("[data-msah-status]");
       if (status) status.textContent = "分析已隐藏。按 ~ 或点击“分析”恢复。";
@@ -2831,12 +2857,6 @@
         return;
       }
 
-      if (!isDeadGuessCandidate(latestResult, latestBoard)) {
-        updateStatus(panel, latestBoard, latestResult, "当前还有确定结论，未使用救援");
-        updateRescueButton();
-        return;
-      }
-
       const source = getRescueSource();
       if (!source) {
         updateStatus(panel, latestBoard, latestResult, "当前局没有可用答案源");
@@ -2844,7 +2864,7 @@
         return;
       }
 
-      const target = findRescueMarkedTarget(latestBoard, latestResult, source);
+      const target = findRescueMarkedTarget(latestBoard, latestResult, getRescueTargetSource(source));
       const targetCell = target.cell;
       if (target.count === 0) {
         updateStatus(panel, latestBoard, latestResult, "先临时插旗标记一个死猜格");
@@ -2853,6 +2873,18 @@
       }
       if (!targetCell) {
         updateStatus(panel, latestBoard, latestResult, "只保留一个救援标记");
+        updateRescueButton();
+        return;
+      }
+      if (hasDeterministicConclusionForCell(latestResult, targetCell)) {
+        rescueHint = { key: targetCell.key, isMine: latestResult.mineKeys.has(targetCell.key) };
+        renderHighlights(latestBoard, latestResult, settings, doc, salt, rescueHint);
+        updateStatus(
+          panel,
+          latestBoard,
+          latestResult,
+          `${formatCellKey(targetCell.key)}已有确定结论，未使用救援`
+        );
         updateRescueButton();
         return;
       }
@@ -2927,6 +2959,16 @@
       }
     });
 
+    function rememberPotentialMarkTarget(event) {
+      if (!event.target || typeof event.target.closest !== "function") return;
+      const cellElement = event.target.closest("div.cell[id^='cell_']");
+      const key = cellElementKey(cellElement);
+      if (key) pendingMarkedKey = key;
+    }
+
+    doc.addEventListener("contextmenu", rememberPotentialMarkTarget, true);
+    doc.addEventListener("mousedown", rememberPotentialMarkTarget, true);
+
     doc.addEventListener("mouseover", (event) => {
       if (!latestBoard || !latestResult || !event.target || typeof event.target.closest !== "function") return;
       const cellElement = event.target.closest("div.cell[id^='cell_']");
@@ -2992,6 +3034,7 @@
       getRescueStorageKey,
       getStorageKey,
       getAutoAnalyzeObserverTargets,
+      hasDeterministicConclusionForCell,
       installRescueSocketCapture,
       isAssistantOnlyClassMutation,
       isAnalysisShortcut,
